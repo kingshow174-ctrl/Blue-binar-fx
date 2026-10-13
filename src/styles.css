@@ -49,3 +49,10 @@ details[open]{gap:10px}
 .pl{font-weight:700;font-size:16px}
 .win{color:var(--g)}.loss{color:var(--r)}
 .pl.open,.pl.unknown{color:var(--mut)}
+
+.osu{display:grid;grid-template-columns:repeat(10,1fr);gap:5px}
+.osu b{aspect-ratio:1/1.25;display:grid;place-items:center;border-radius:6px;font-size:13px;color:#fff}
+.osu .cO{background:#48bb78}
+.osu .cS{background:#4299e1}
+.osu .cU{background:#f56565}
+.osu .x{background:#081226;color:var(--mut)}

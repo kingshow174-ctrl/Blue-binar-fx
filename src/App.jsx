@@ -200,6 +200,9 @@ export default function App() {
   const last = digits[digits.length - 1]
   const evenPct = Math.round((counts.filter((_, i) => i % 2 === 0).reduce((a, b) => a + b, 0) / n) * 100)
 
+  const oN = last100.filter((d) => d > barrier).length
+  const sN = last100.filter((d) => d === barrier).length
+  const uN = last100.length - oN - sN
   const closed = hist.filter((h) => h.status === 'win' || h.status === 'loss')
   const wins = closed.filter((h) => h.status === 'win').length
   const net = closed.reduce((a, h) => a + (h.profit || 0), 0)
@@ -243,8 +246,16 @@ export default function App() {
             <div className="price">{price}</div>
             <div className="big">{last ?? '-'}</div>
             <div className="muted">Last digit · Even {evenPct}% / Odd {100 - evenPct}%</div>
-            <div className="strip">
-              {digits.slice(-20).map((d, i) => <b key={i} className={d % 2 ? 'o' : 'e'}>{d}</b>)}
+            <div className="osu">
+              {Array.from({ length: 30 }, (_, i) => {
+                const d = digits[digits.length - 30 + i]
+                if (d === undefined) return <b key={i} className="x">·</b>
+                const c = d > barrier ? 'O' : d < barrier ? 'U' : 'S'
+                return <b key={i} className={'c' + c}>{c}</b>
+              })}
+            </div>
+            <div className="muted">
+              vs digit {barrier} · Over {Math.round((oN / n) * 100)}% · Same {Math.round((sN / n) * 100)}% · Under {Math.round((uN / n) * 100)}%
             </div>
           </section>
 
