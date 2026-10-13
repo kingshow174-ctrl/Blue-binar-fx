@@ -1,0 +1,35 @@
+:root{--bg:#050b1a;--card:#0c1a33;--line:#17305c;--blue:#2f7bff;--txt:#e6efff;--mut:#7f95bf;--g:#18c37e;--r:#ff4d5e}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--txt);font-family:system-ui,sans-serif}
+.app{max-width:520px;margin:auto;padding:12px;display:grid;gap:12px}
+header{display:flex;justify-content:space-between;align-items:center}
+h1{margin:0;font-size:22px}h1 span{color:var(--blue)}
+.acct{font-size:13px;color:var(--mut);display:flex;align-items:center;gap:6px}
+.dot{width:9px;height:9px;border-radius:50%;background:#888}
+.dot.online{background:var(--g)}.dot.offline{background:var(--r)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;display:grid;gap:10px}
+select,input{width:100%;padding:10px;border-radius:8px;border:1px solid var(--line);background:#081226;color:var(--txt);font-size:15px}
+label{display:grid;gap:4px;font-size:12px;color:var(--mut)}
+.price{text-align:center;font-size:20px;color:var(--mut)}
+.big{text-align:center;font-size:72px;font-weight:800;color:var(--blue);line-height:1}
+.muted{font-size:12px;color:var(--mut);text-align:center}
+.strip{display:flex;gap:3px;flex-wrap:wrap;justify-content:center}
+.strip b{width:22px;height:22px;display:grid;place-items:center;border-radius:5px;font-size:12px}
+.strip .e{background:#123a7a}.strip .o{background:#5a1f3a}
+.bars{display:grid;grid-template-columns:repeat(10,1fr);gap:4px;height:130px}
+.bar{display:flex;flex-direction:column;align-items:center;gap:2px;font-size:10px}
+.bar small{font-size:9px;color:var(--mut)}
+.track{flex:1;width:100%;background:#081226;border-radius:4px;display:flex;align-items:flex-end;overflow:hidden}
+.fill{width:100%;background:var(--blue);max-height:100%}
+.fill.hi{background:var(--g)}.fill.lo{background:var(--r)}
+.bar.cur span{color:#fff;background:var(--blue);border-radius:4px;padding:0 4px}
+.tabs,.row{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:8px}
+.pick{display:grid;grid-template-columns:repeat(10,1fr);gap:4px}
+button{padding:10px;border-radius:8px;border:1px solid var(--line);background:#081226;color:var(--txt);font-weight:600;cursor:pointer}
+button.on{background:var(--blue);border-color:var(--blue)}
+.buy{padding:16px;font-size:16px;border:0}
+.buy.even{background:var(--g);color:#032}.buy.odd{background:var(--r);color:#fff}
+.save{background:var(--blue);border:0}
+.log{font-size:13px;padding:4px 0;border-bottom:1px solid var(--line)}
+summary{cursor:pointer}
+details[open]{gap:10px}

@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: blue-binary-fx
+    runtime: node
+    plan: free
+    buildCommand: npm install --include=dev && npm run build
+    startCommand: node server.js
+    envVars:
+      - key: VITE_DERIV_CLIENT_ID
+        value: 34FgydR3lvHmK082sOXFC
