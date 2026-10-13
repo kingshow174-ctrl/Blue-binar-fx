@@ -56,3 +56,17 @@ details[open]{gap:10px}
 .osu .cS{background:#4299e1}
 .osu .cU{background:#f56565}
 .osu .x{background:#081226;color:var(--mut)}
+
+.osu .g{background:#48bb78}
+.osu .b{background:#4299e1}
+.osu .r{background:#f56565}
+.pcthead{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.pcthead b{font-size:15px}
+.pcthead input{width:80px;text-align:center}
+.prow{display:grid;grid-template-columns:96px 1fr;align-items:center;gap:8px}
+.prow span{font-size:12px;color:var(--mut)}
+.ptrack{background:#081226;border-radius:6px;overflow:hidden}
+.pfill{min-width:46px;padding:10px 6px;text-align:center;font-weight:800;color:#fff;transition:width .3s}
+.pfill.g{background:#16a34a}
+.pfill.r{background:#dc2626}
+.pfill.b{background:#3b82f6}

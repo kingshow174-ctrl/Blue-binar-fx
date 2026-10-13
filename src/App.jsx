@@ -50,6 +50,7 @@ export default function App() {
   const [barrier, setBarrier] = useState(5)
   const [stake, setStake] = useState(1)
   const [dur, setDur] = useState(1)
+  const [win, setWin] = useState(100)
   const [hist, setHist] = useState(loadHist)
   const [notice, setNotice] = useState('')
 
@@ -200,10 +201,22 @@ export default function App() {
   const last = digits[digits.length - 1]
   const evenPct = Math.round((counts.filter((_, i) => i % 2 === 0).reduce((a, b) => a + b, 0) / n) * 100)
 
-  const oN = last100.filter((d) => d > barrier).length
-  const sN = last100.filter((d) => d === barrier).length
-  const uN = last100.length - oN - sN
-  const closed = hist.filter((h) => h.status === 'win' || h.status === 'loss')
+  const sample = digits.slice(-Math.max(10, Math.min(200, +win || 100)))
+  const sn = sample.length || 1
+  const cnt = (fn) => sample.filter(fn).length
+  const pct = (x) => Math.round((x / sn) * 100)
+  const kindOf = (d) =>
+    mode === 'eo' ? (d % 2 ? ['O', 'r'] : ['E', 'g'])
+    : mode === 'md' ? (d === barrier ? ['M', 'g'] : ['D', 'r'])
+    : d > barrier ? ['O', 'g'] : d < barrier ? ['U', 'r'] : ['S', 'b']
+  const title = mode === 'eo' ? 'EVEN ODD' : mode === 'md' ? 'MATCH DIFFER' : 'OVER UNDER'
+  const bars =
+    mode === 'eo'
+      ? [['EVEN', cnt((d) => d % 2 === 0), 'g'], ['ODD', cnt((d) => d % 2 === 1), 'r']]
+      : mode === 'md'
+      ? [['MATCH ' + barrier, cnt((d) => d === barrier), 'g'], ['DIFFERS ' + barrier, cnt((d) => d !== barrier), 'r']]
+      : [['OVER ' + barrier, cnt((d) => d > barrier), 'g'], ['SAME ' + barrier, cnt((d) => d === barrier), 'b'], ['UNDER ' + barrier, cnt((d) => d < barrier), 'r']]
+    const closed = hist.filter((h) => h.status === 'win' || h.status === 'loss')
   const wins = closed.filter((h) => h.status === 'win').length
   const net = closed.reduce((a, h) => a + (h.profit || 0), 0)
 
@@ -248,30 +261,27 @@ export default function App() {
             <div className="muted">Last digit · Even {evenPct}% / Odd {100 - evenPct}%</div>
             <div className="osu">
               {Array.from({ length: 30 }, (_, i) => {
-                const d = digits[digits.length - 30 + i]
+                const d = digits.slice(-30)[i]
                 if (d === undefined) return <b key={i} className="x">·</b>
-                const c = d > barrier ? 'O' : d < barrier ? 'U' : 'S'
-                return <b key={i} className={'c' + c}>{c}</b>
+                const [l, c] = kindOf(d)
+                return <b key={i} className={c}>{l}</b>
               })}
-            </div>
-            <div className="muted">
-              vs digit {barrier} · Over {Math.round((oN / n) * 100)}% · Same {Math.round((sN / n) * 100)}% · Under {Math.round((uN / n) * 100)}%
             </div>
           </section>
 
           <section className="card">
-            <div className="muted">Digit frequency (last {last100.length})</div>
-            <div className="bars">
-              {counts.map((c, i) => (
-                <div key={i} className={'bar' + (i === last ? ' cur' : '')}>
-                  <small>{Math.round((c / n) * 100)}%</small>
-                  <div className="track">
-                    <div className={'fill' + (c === max ? ' hi' : c === min ? ' lo' : '')} style={{ height: (c / n) * 100 * 4 + '%' }} />
-                  </div>
-                  <span>{i}</span>
-                </div>
-              ))}
+            <div className="pcthead">
+              <b>{title} PERCENTAGES</b>
+              <input type="number" min="10" max="200" value={win} onChange={(e) => setWin(e.target.value)} />
             </div>
+            {bars.map(([label, c, col]) => (
+              <div className="prow" key={label}>
+                <span>{label}</span>
+                <div className="ptrack">
+                  <div className={'pfill ' + col} style={{ width: pct(c) + '%' }}>{pct(c)}%</div>
+                </div>
+              </div>
+            ))}
           </section>
 
           <section className="card">
