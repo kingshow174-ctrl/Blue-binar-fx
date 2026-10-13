@@ -73,30 +73,79 @@ export default function App() {
     }
   }, [])
 
-  // Public ticks socket
+  // Public ticks socket (auto-reconnect, preloads last 200 ticks)
+  const symRef = useRef('R_100')
+  const pipRef = useRef(2)
+  const subbed = useRef(false)
+  const histTimer = useRef(null)
+  symRef.current = symbol
+
+  const subscribeTicks = () => {
+    if (subbed.current) return
+    subbed.current = true
+    clearTimeout(histTimer.current)
+    pubSend({ ticks: symRef.current, subscribe: 1 })
+  }
+
   useEffect(() => {
-    const s = new WebSocket(PUBLIC_WS)
-    pub.current = s
-    s.onopen = () => setStatus('online')
-    s.onclose = () => setStatus('offline')
-    s.onmessage = (e) => {
-      const m = JSON.parse(e.data)
-      if (m.error) return note('⚠ ' + m.error.message)
-      if (m.msg_type === 'tick') {
-        const t = m.tick
-        const p = t.quote.toFixed(t.pip_size)
-        setPrice(p)
-        setDigits((d) => [...d.slice(-199), +p.slice(-1)])
+    let dead = false
+    let retry
+    const connect = () => {
+      const s = new WebSocket(PUBLIC_WS)
+      pub.current = s
+      s.onopen = () => setStatus('online')
+      s.onclose = () => {
+        setStatus('offline')
+        if (!dead) retry = setTimeout(connect, 2000)
+      }
+      s.onmessage = (e) => {
+        const m = JSON.parse(e.data)
+        if (m.msg_type === 'history') {
+          const req = m.echo_req?.ticks_history
+          if (req && req !== symRef.current) return
+          const h = m.history || {}
+          const pip = m.pip_size ?? h.pip_size ?? pipRef.current
+          pipRef.current = pip
+          const prices = h.prices || []
+          setDigits(prices.map((p) => +Number(p).toFixed(pip).slice(-1)).slice(-200))
+          if (prices.length) setPrice(Number(prices[prices.length - 1]).toFixed(pip))
+          subscribeTicks()
+          return
+        }
+        if (m.error) {
+          if (m.echo_req?.ticks_history) subscribeTicks()
+          return note('⚠ ' + m.error.message)
+        }
+        if (m.msg_type === 'tick') {
+          const t = m.tick
+          pipRef.current = t.pip_size
+          const p = t.quote.toFixed(t.pip_size)
+          setPrice(p)
+          setDigits((d) => [...d.slice(-199), +p.slice(-1)])
+        }
       }
     }
-    return () => s.close()
+    connect()
+    const vis = () => {
+      if (document.visibilityState === 'visible') pub.current?.close()
+    }
+    document.addEventListener('visibilitychange', vis)
+    return () => {
+      dead = true
+      clearTimeout(retry)
+      document.removeEventListener('visibilitychange', vis)
+      pub.current?.close()
+    }
   }, [])
 
   useEffect(() => {
     if (status !== 'online') return
+    subbed.current = false
     pubSend({ forget_all: 'ticks' })
     setDigits([])
-    pubSend({ ticks: symbol, subscribe: 1 })
+    pubSend({ ticks_history: symbol, count: 200, end: 'latest', style: 'ticks' })
+    clearTimeout(histTimer.current)
+    histTimer.current = setTimeout(subscribeTicks, 3000)
   }, [symbol, status])
 
   // Accounts after login
@@ -261,10 +310,10 @@ export default function App() {
             <div className="muted">Last digit · Even {evenPct}% / Odd {100 - evenPct}%</div>
             <div className="osu">
               {Array.from({ length: 30 }, (_, i) => {
-                const d = digits.slice(-30)[i]
+                const d = digits[digits.length - 1 - i]
                 if (d === undefined) return <b key={i} className="x">·</b>
                 const [l, c] = kindOf(d)
-                return <b key={i} className={c}>{l}</b>
+                return <b key={i} className={c + (i === 0 ? ' new' : '')}>{l}</b>
               })}
             </div>
           </section>
