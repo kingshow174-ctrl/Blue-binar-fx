@@ -19,6 +19,7 @@ export default function App() {
   const pub = useRef(null)
   const trd = useRef(null)
   const pending = useRef(false)
+  const subId = useRef(null)
   const [token, setToken] = useState(sessionStorage.getItem('bbfx_token') || '')
   const [accounts, setAccounts] = useState([])
   const [accId, setAccId] = useState('')
@@ -112,14 +113,17 @@ export default function App() {
 
   function onTrade(e) {
     const m = JSON.parse(e.data)
-    if (m.error) { pending.current = false; return addLog('⚠ ' + m.error.message) }
+    if (m.error) { pending.current = false; return addLog('⚠ ' + (m.error.code || '') + ' ' + m.error.message) }
     if (m.msg_type === 'balance') {
       setBal(Number(m.balance.balance).toFixed(2))
       setCur(m.balance.currency)
     } else if (m.msg_type === 'proposal' && pending.current) {
+      const st = pending.current
+      subId.current = m.subscription?.id
       pending.current = false
-      trdSend({ buy: m.proposal.id, price: m.proposal.ask_price })
+      trdSend({ buy: m.proposal.id, price: Number(m.proposal.ask_price) || st })
     } else if (m.msg_type === 'buy') {
+      if (subId.current) { trdSend({ forget: subId.current }); subId.current = null }
       addLog(`Bought #${m.buy.contract_id} @ ${m.buy.buy_price}`)
       trdSend({ proposal_open_contract: 1, contract_id: m.buy.contract_id, subscribe: 1 })
     } else if (m.msg_type === 'proposal_open_contract') {
@@ -135,13 +139,13 @@ export default function App() {
     if (!tradeOn) return addLog('Log in first')
     if (acct && !acct.demo && !confirm('REAL account. Place this trade?')) return
     const p = {
-      proposal: 1, amount: +stake, basis: 'stake', contract_type: type, currency: cur,
+      proposal: 1, subscribe: 1, amount: +stake, basis: 'stake', contract_type: type, currency: cur,
       duration: +dur, duration_unit: 't', underlying_symbol: symbol,
     }
     if (type === 'DIGITOVER' && barrier === 9) return addLog('Over needs digit 0-8')
     if (type === 'DIGITUNDER' && barrier === 0) return addLog('Under needs digit 1-9')
     if (type !== 'DIGITEVEN' && type !== 'DIGITODD') p.barrier = String(barrier)
-    pending.current = true
+    pending.current = +stake || 1
     trdSend(p)
   }
 
