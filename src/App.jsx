@@ -271,6 +271,7 @@ export default function App() {
 
   return (
     <div className="app">
+      <div className="topbar">
       <header>
         <h1>Blue Binary <span>FX</span></h1>
         <div className="acct">
@@ -298,6 +299,7 @@ export default function App() {
           History{hist.length ? ` (${hist.length})` : ''}
         </button>
       </div>
+    </div>
 
       {tab === 'trader' && (
         <>

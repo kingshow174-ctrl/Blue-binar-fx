@@ -72,3 +72,12 @@ details[open]{gap:10px}
 .pfill.b{background:#3b82f6}
 
 .osu .new{outline:2px solid #fff;outline-offset:1px}
+
+html,body{overflow-x:hidden}
+.app{padding-top:170px}
+.topbar{position:fixed;top:0;left:50%;transform:translateX(-50%);width:100%;max-width:520px;z-index:30;
+  background:var(--bg);padding:calc(6px + env(safe-area-inset-top)) 12px 8px;
+  border-bottom:1px solid var(--line);display:grid;gap:8px}
+.topbar h1{font-size:19px}
+.topbar .card{padding:6px}
+.topbar select,.topbar button{padding:8px}
