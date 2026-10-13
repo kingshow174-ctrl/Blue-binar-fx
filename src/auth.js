@@ -10,8 +10,8 @@ export async function login() {
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
   const state = Array.from(crypto.getRandomValues(new Uint8Array(16)))
     .map((b) => b.toString(16).padStart(2, '0')).join('')
-  sessionStorage.setItem('pkce_code_verifier', verifier)
-  sessionStorage.setItem('oauth_state', state)
+  localStorage.setItem('pkce_code_verifier', verifier)
+  localStorage.setItem('oauth_state', state)
   const q = new URLSearchParams({
     response_type: 'code',
     client_id: CLIENT_ID,
@@ -27,21 +27,21 @@ export async function login() {
 export async function handleCallback() {
   const p = new URLSearchParams(location.search)
   if (p.get('error')) throw new Error(p.get('error_description') || p.get('error'))
-  if (p.get('state') !== sessionStorage.getItem('oauth_state')) throw new Error('State mismatch')
+  if (p.get('state') !== localStorage.getItem('oauth_state')) throw new Error('State mismatch')
   const r = await fetch('/api/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       client_id: CLIENT_ID,
       code: p.get('code'),
-      code_verifier: sessionStorage.getItem('pkce_code_verifier'),
+      code_verifier: localStorage.getItem('pkce_code_verifier'),
       redirect_uri: REDIRECT,
     }),
   })
   const j = await r.json()
   if (!j.access_token) throw new Error(j.error_description || j.error || 'Token exchange failed')
-  sessionStorage.removeItem('pkce_code_verifier')
-  sessionStorage.removeItem('oauth_state')
+  localStorage.removeItem('pkce_code_verifier')
+  localStorage.removeItem('oauth_state')
   sessionStorage.setItem('bbfx_token', j.access_token)
   history.replaceState({}, '', '/')
   return j.access_token
