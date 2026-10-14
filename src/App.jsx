@@ -41,6 +41,8 @@ const loadHist = () => {
 const fmtTime = (t) =>
   new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' })
 
+const DEF_ALERT = { digits: [], thr: 15, dir: 'above', n: 100, syms: SYMS.map((x) => x[0]), sound: true }
+
 export default function App() {
   const pub = useRef(null)
   const trd = useRef(null)
@@ -48,7 +50,7 @@ export default function App() {
   const tradeMeta = useRef(null)
   const subId = useRef(null)
   const noteTimer = useRef(null)
-  const armed = useRef({})
+  const armedProps = useRef({})
   const reqType = useRef({})
   const armTimer = useRef(null)
   const buying = useRef(false)
@@ -82,12 +84,33 @@ export default function App() {
 
   symRef.current = symbol
 
-  // ---------- Digit alerts: scans several markets in the background ----------
-  const defAlert = { digits: [], thr: 15, dir: 'above', n: 100, syms: SYMS.map((x) => x[0]), sound: true }
+  const note = (t) => {
+    setNotice(t)
+    clearTimeout(noteTimer.current)
+    noteTimer.current = setTimeout(() => setNotice(''), 5000)
+  }
+  const showResultTimer = () => {
+    clearTimeout(resultTimer.current)
+    resultTimer.current = setTimeout(() => setResult(null), 7000)
+  }
+  const pubSend = (o) => pub.current?.readyState === 1 && pub.current.send(JSON.stringify(o))
+  const trdSend = (o) => trd.current?.readyState === 1 && trd.current.send(JSON.stringify(o))
+  const headers = { Authorization: 'Bearer ' + token, 'Deriv-App-ID': APP_ID }
+  const acct = accounts.find((a) => a.id === accId)
+  const lastDigit = (v) => {
+    if (v == null) return undefined
+    const str = typeof v === 'number' ? v.toFixed(pipRef.current) : String(v)
+    const d = +str.slice(-1)
+    return Number.isNaN(d) ? undefined : d
+  }
+
+  useEffect(() => { localStorage.bbfx_hist = JSON.stringify(hist.slice(0, 100)) }, [hist])
+
+  // ---------- Digit alerts (scans several markets in the background) ----------
   const [al, setAl] = useState(() => {
-    try { return { ...defAlert, ...JSON.parse(localStorage.bbfx_alert || '{}') } } catch { return defAlert }
+    try { return { ...DEF_ALERT, ...JSON.parse(localStorage.bbfx_alert || '{}') } } catch { return DEF_ALERT }
   })
-  const [armed, setArmed] = useState(false)
+  const [monOn, setMonOn] = useState(false)
   const [popups, setPopups] = useState([])
   const [alog, setAlog] = useState([])
   const [, force] = useState(0)
@@ -170,21 +193,20 @@ export default function App() {
       }
     })
   }
-  const toggleArm = () => {
-    if (armed) { setArmed(false); dismiss(); return }
+  const toggleMon = () => {
+    if (monOn) { setMonOn(false); dismiss(); return }
     if (!al.digits.length) return note('Pick at least one digit')
     if (!al.syms.length) return note('Pick at least one market')
     unlockAudio()
-    setArmed(true)
+    setMonOn(true)
   }
   const togDigit = (d) =>
     setA({ digits: al.digits.includes(d) ? al.digits.filter((x) => x !== d) : [...al.digits, d].sort((a, b) => a - b) })
   const togSym = (v) =>
     setA({ syms: al.syms.includes(v) ? al.syms.filter((x) => x !== v) : [...al.syms, v] })
 
-  // monitor socket (separate from the trading screen)
   useEffect(() => {
-    if (!armed) return
+    if (!monOn) return
     let dead = false
     let retry
     const syms = al.syms
@@ -246,11 +268,10 @@ export default function App() {
       document.removeEventListener('visibilitychange', vis)
       monWs.current && monWs.current.close()
     }
-  }, [armed, al.syms.join(',')])
+  }, [monOn, al.syms.join(',')])
 
-  // keep the screen awake while monitoring
   useEffect(() => {
-    if (!armed) return
+    if (!monOn) return
     let lock
     const get = () => {
       if (navigator.wakeLock) navigator.wakeLock.request('screen').then((l) => { lock = l }).catch(() => {})
@@ -262,38 +283,16 @@ export default function App() {
       document.removeEventListener('visibilitychange', v)
       if (lock && lock.release) lock.release()
     }
-  }, [armed])
+  }, [monOn])
 
-  const note = (t) => {
-    setNotice(t)
-    clearTimeout(noteTimer.current)
-    noteTimer.current = setTimeout(() => setNotice(''), 5000)
-  }
-  const showResultTimer = () => {
-    clearTimeout(resultTimer.current)
-    resultTimer.current = setTimeout(() => setResult(null), 7000)
-  }
-  const pubSend = (o) => pub.current?.readyState === 1 && pub.current.send(JSON.stringify(o))
-  const trdSend = (o) => trd.current?.readyState === 1 && trd.current.send(JSON.stringify(o))
-  const headers = { Authorization: 'Bearer ' + token, 'Deriv-App-ID': APP_ID }
-  const acct = accounts.find((a) => a.id === accId)
-  const lastDigit = (v) => {
-    if (v == null) return undefined
-    const str = typeof v === 'number' ? v.toFixed(pipRef.current) : String(v)
-    const d = +str.slice(-1)
-    return Number.isNaN(d) ? undefined : d
-  }
-
-  useEffect(() => { localStorage.bbfx_hist = JSON.stringify(hist.slice(0, 100)) }, [hist])
-
-  // OAuth callback
+  // ---------- OAuth callback ----------
   useEffect(() => {
     if (location.pathname === '/callback') {
       handleCallback().then(setToken).catch((e) => note('Login failed: ' + e.message))
     }
   }, [])
 
-  // Public ticks socket (auto-reconnect, preloads last 200 ticks)
+  // ---------- Public ticks socket (auto-reconnect, preloads last 200 ticks) ----------
   const subscribeTicks = () => {
     if (subbed.current) return
     subbed.current = true
@@ -337,7 +336,6 @@ export default function App() {
           const dgt = +p.slice(-1)
           setPrice(p)
           setDigits((d) => [...d.slice(-199), dgt])
-          // instant provisional result on the tick that settles the contract
           if (waiting.current.length) {
             const ep = t.epoch ?? 0
             waiting.current.forEach((w) => {
@@ -377,7 +375,7 @@ export default function App() {
     histTimer.current = setTimeout(subscribeTicks, 3000)
   }, [symbol, status])
 
-  // Accounts after login
+  // ---------- Accounts after login ----------
   useEffect(() => {
     if (!token) return
     fetch('/api/accounts', { headers })
@@ -392,7 +390,7 @@ export default function App() {
       .catch((e) => { note('⚠ Accounts: ' + e.message); logout() })
   }, [token])
 
-  // Authenticated trading socket (OTP URL)
+  // ---------- Authenticated trading socket (OTP URL) ----------
   useEffect(() => {
     if (!token || !accId) return
     let dead = false
@@ -413,9 +411,9 @@ export default function App() {
     return () => { dead = true; s?.close(); setTradeOn(false) }
   }, [token, accId])
 
-  // Keep live proposals armed so a tap sends the buy immediately
+  // ---------- Keep live proposals ready so a tap buys immediately ----------
   useEffect(() => {
-    armed.current = {}
+    armedProps.current = {}
     if (!tradeOn) return
     clearTimeout(armTimer.current)
     armTimer.current = setTimeout(() => {
@@ -459,7 +457,7 @@ export default function App() {
         tradeMeta.current = st
         trdSend({ buy: m.proposal.id, price: Number(m.proposal.ask_price) || st.stake })
       } else if (reqType.current[rid]) {
-        armed.current[reqType.current[rid]] = { id: m.proposal.id, ask: m.proposal.ask_price }
+        armedProps.current[reqType.current[rid]] = { id: m.proposal.id, ask: m.proposal.ask_price }
       }
     } else if (m.msg_type === 'buy') {
       buying.current = false
@@ -503,9 +501,9 @@ export default function App() {
     tradeMeta.current = meta
     buying.current = true
     setTimeout(() => { buying.current = false }, 8000)
-    const a = armed.current[type]
+    const a = armedProps.current[type]
     if (a?.id) {
-      delete armed.current[type]
+      delete armedProps.current[type]
       trdSend({ buy: a.id, price: Number(a.ask) || meta.stake })
     } else {
       pending.current = meta
@@ -548,6 +546,7 @@ export default function App() {
   const closed = hist.filter((h) => h.status === 'win' || h.status === 'loss')
   const wins = closed.filter((h) => h.status === 'win').length
   const net = closed.reduce((a, h) => a + (h.profit || 0), 0)
+  const cols = '110px repeat(' + al.digits.length + ', 1fr)'
 
   return (
     <div className="app">
@@ -576,9 +575,11 @@ export default function App() {
         <div className="tabs">
           <button className={tab === 'trader' ? 'on' : ''} onClick={() => setTab('trader')}>Trader</button>
           <button className={tab === 'history' ? 'on' : ''} onClick={() => setTab('history')}>
-            History{hist.length ? ' (' + hist.length + ')' : ''}
+            History{hist.length ? ` (${hist.length})` : ''}
           </button>
-          <button className={tab === 'alerts' ? 'on' : ''} onClick={() => setTab('alerts')}>Alerts{armed ? ' 🔔' : ''}</button>
+          <button className={tab === 'alerts' ? 'on' : ''} onClick={() => setTab('alerts')}>
+            Alerts{monOn ? ' 🔔' : ''}
+          </button>
         </div>
       </div>
 
@@ -642,31 +643,31 @@ export default function App() {
           <section className="card">
             <div className="pcthead">
               <b>DIGIT ALERTS</b>
-              <button className={'armbtn ' + (armed ? 'on' : '')} onClick={toggleArm}>{armed ? 'Stop' : 'Start'}</button>
+              <button className={'armbtn ' + (monOn ? 'on' : '')} onClick={toggleMon}>{monOn ? 'Stop' : 'Start'}</button>
             </div>
             <div className="muted">
-              {armed ? 'Monitoring. Keep this page open and the screen on.' : 'Pick digits and a percentage, then tap Start.'}
+              {monOn ? 'Monitoring. Keep this page open and the screen on.' : 'Pick digits and a percentage, then tap Start.'}
             </div>
             <div className="muted">Digits to watch</div>
             <div className="pick">
               {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((d) => (
-                <button key={d} disabled={armed} className={al.digits.includes(d) ? 'on' : ''} onClick={() => togDigit(d)}>{d}</button>
+                <button key={d} disabled={monOn} className={al.digits.includes(d) ? 'on' : ''} onClick={() => togDigit(d)}>{d}</button>
               ))}
             </div>
             <div className="row">
               <label>Ring when digit is
-                <select disabled={armed} value={al.dir} onChange={(e) => setA({ dir: e.target.value })}>
+                <select disabled={monOn} value={al.dir} onChange={(e) => setA({ dir: e.target.value })}>
                   <option value="above">at or above</option>
                   <option value="below">at or below</option>
                 </select>
               </label>
               <label>Percent
-                <input type="number" min="0" max="100" step="0.5" disabled={armed} value={al.thr} onChange={(e) => setA({ thr: e.target.value })} />
+                <input type="number" min="0" max="100" step="0.5" disabled={monOn} value={al.thr} onChange={(e) => setA({ thr: e.target.value })} />
               </label>
             </div>
             <div className="row">
               <label>Over last ticks
-                <input type="number" min="10" max="200" disabled={armed} value={al.n} onChange={(e) => setA({ n: e.target.value })} />
+                <input type="number" min="10" max="200" disabled={monOn} value={al.n} onChange={(e) => setA({ n: e.target.value })} />
               </label>
               <label>Sound
                 <select value={al.sound ? 'on' : 'off'} onChange={(e) => setA({ sound: e.target.value === 'on' })}>
@@ -682,15 +683,15 @@ export default function App() {
             <div className="muted">Markets to scan</div>
             <div className="chips">
               {SYMS.map(([v, l]) => (
-                <button key={v} disabled={armed} className={al.syms.includes(v) ? 'on' : ''} onClick={() => togSym(v)}>{l}</button>
+                <button key={v} disabled={monOn} className={al.syms.includes(v) ? 'on' : ''} onClick={() => togSym(v)}>{l}</button>
               ))}
             </div>
           </section>
 
-          {armed && (
+          {monOn && (
             <section className="card">
               <div className="muted">Live scan (last {alN} ticks, green = alert level reached)</div>
-              <div className="srow" style={{ gridTemplateColumns: '110px repeat(' + al.digits.length + ', 1fr)' }}>
+              <div className="srow" style={{ gridTemplateColumns: cols }}>
                 <span />
                 {al.digits.map((d) => <b key={d} className="sh">{d}</b>)}
               </div>
@@ -698,11 +699,15 @@ export default function App() {
                 const arr = mon.current[sym] || []
                 const ready = arr.length >= alN
                 return (
-                  <div className="srow" key={sym} style={{ gridTemplateColumns: '110px repeat(' + al.digits.length + ', 1fr)' }}>
+                  <div className="srow" key={sym} style={{ gridTemplateColumns: cols }}>
                     <button className="sname" onClick={() => go(sym)}>{SYMN[sym]}</button>
                     {al.digits.map((d) => {
                       const p = pctOf(arr, alN, d)
-                      return <span key={d} className={'sc' + (ready && hitOf(p) ? ' hit' : '')}>{ready ? Math.round(p) + '%' : '…'}</span>
+                      return (
+                        <span key={d} className={'sc' + (ready && hitOf(p) ? ' hit' : '')}>
+                          {ready ? Math.round(p) + '%' : '…'}
+                        </span>
+                      )
                     })}
                   </div>
                 )
@@ -783,7 +788,9 @@ export default function App() {
           </div>
         </div>
       )}
+
       {tab !== 'trader' && notice && <div className="notice floating">{notice}</div>}
+
       {popups.length > 0 && (
         <div className="alertpop">
           <div className="ap-card">
