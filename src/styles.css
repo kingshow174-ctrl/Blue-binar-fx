@@ -112,3 +112,11 @@ button:disabled{opacity:.5}
 .circ.b{border-color:#2f6fb8}
 .circ.r{border-color:#c53030}
 .tri{color:#e53e3e;font-style:normal;height:14px;font-size:12px}
+
+.tp{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px;display:grid;gap:8px}
+.tphead{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:13px;cursor:pointer}
+.tphead span{color:var(--mut);font-size:12px}
+.overlay .inner{max-height:75vh;overflow-y:auto}
+.app.al{padding-bottom:230px}
+.app.al.open{padding-bottom:400px}
+.sname.sel{background:var(--blue);border-color:var(--blue)}

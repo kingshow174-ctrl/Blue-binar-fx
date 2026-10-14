@@ -81,6 +81,7 @@ export default function App() {
   const [hist, setHist] = useState(loadHist)
   const [notice, setNotice] = useState('')
   const [result, setResult] = useState(null)
+  const [tpOpen, setTpOpen] = useState(false)
 
   symRef.current = symbol
 
@@ -162,7 +163,7 @@ export default function App() {
     }
   }
   const dismiss = () => { setPopups([]); stopRing() }
-  const go = (sym) => { setSymbol(sym); setTab('trader'); dismiss() }
+  const go = (sym) => { setSymbol(sym); if (tab === 'history') setTab('alerts'); dismiss() }
   const pctOf = (arr, n, d) => {
     const w = arr.slice(-n)
     return w.length ? (w.filter((x) => x === d).length / w.length) * 100 : 0
@@ -609,7 +610,7 @@ export default function App() {
   const cols = '110px repeat(' + al.digits.length + ', 1fr)'
 
   return (
-    <div className="app">
+    <div className={'app' + (tab === 'alerts' ? ' al' : '') + (tab === 'alerts' && tpOpen ? ' open' : '')}>
       <div className="topbar">
         <header>
           <h1>Blue Binary <span>FX</span></h1>
@@ -784,7 +785,7 @@ export default function App() {
                 const ready = arr.length >= alN
                 return (
                   <div className="srow" key={sym} style={{ gridTemplateColumns: cols }}>
-                    <button className="sname" onClick={() => go(sym)}>{SYMN[sym]}</button>
+                    <button className={'sname' + (sym === symbol ? ' sel' : '')} onClick={() => go(sym)}>{SYMN[sym]}</button>
                     {al.digits.map((d) => {
                       const p = pctOf(arr, alN, d)
                       return (
@@ -842,9 +843,42 @@ export default function App() {
         </section>
       )}
 
-      {tab === 'trader' && (
+      {(tab === 'trader' || tab === 'alerts') && (
         <div className="overlay">
           <div className="inner">
+            {tab === 'alerts' && (
+              <div className="tp">
+                <div className="tphead" onClick={() => setTpOpen((o) => !o)}>
+                  <b>{SYMN[symbol]}</b>
+                  <span>
+                    {mode === 'eo' ? 'Even/Odd' : mode === 'md' ? 'Match/Differ ' + barrier : 'Over/Under ' + barrier} · {stake} · {dur}t {tpOpen ? '▾' : '▴'}
+                  </span>
+                </div>
+                {tpOpen && (
+                  <>
+                    <select value={symbol} onChange={(e) => setSymbol(e.target.value)}>
+                      {SYMS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                    </select>
+                    <div className="tabs">
+                      <button className={mode === 'eo' ? 'on' : ''} onClick={() => setMode('eo')}>Even/Odd</button>
+                      <button className={mode === 'md' ? 'on' : ''} onClick={() => setMode('md')}>Match/Differ</button>
+                      <button className={mode === 'ou' ? 'on' : ''} onClick={() => setMode('ou')}>Over/Under</button>
+                    </div>
+                    {mode !== 'eo' && (
+                      <div className="pick">
+                        {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((d) => (
+                          <button key={d} className={barrier === d ? 'on' : ''} onClick={() => setBarrier(d)}>{d}</button>
+                        ))}
+                      </div>
+                    )}
+                    <div className="row">
+                      <label>Stake<input type="number" min="0.35" step="0.1" value={stake} onChange={(e) => setStake(e.target.value)} /></label>
+                      <label>Ticks<input type="number" min="1" max="10" value={dur} onChange={(e) => setDur(e.target.value)} /></label>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
             {result && (
               <div className={'result ' + (result.win ? 'win' : 'loss')}>
                 <b className="hit">{result.digit ?? '?'}</b>
@@ -873,7 +907,7 @@ export default function App() {
         </div>
       )}
 
-      {tab !== 'trader' && notice && <div className="notice floating">{notice}</div>}
+      {tab === 'history' && notice && <div className="notice floating">{notice}</div>}
 
       {popups.length > 0 && (
         <div className="alertpop">
