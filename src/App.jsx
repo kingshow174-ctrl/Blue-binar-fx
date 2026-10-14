@@ -285,6 +285,57 @@ export default function App() {
     }
   }, [monOn])
 
+  // ---------- Circles analysis (own socket, up to 5000 ticks) ----------
+  const [circSym, setCircSym] = useState('R_10')
+  const [circNIn, setCircNIn] = useState(1000)
+  const [cd, setCd] = useState([])
+  const circN = Math.max(100, Math.min(5000, +circNIn || 1000))
+  useEffect(() => {
+    if (tab !== 'alerts') return
+    let dead = false
+    let sock
+    let retry
+    let subTimer
+    const run = () => {
+      sock = new WebSocket(PUBLIC_WS)
+      let subd = false
+      const sub = () => {
+        if (subd || sock.readyState !== 1) return
+        subd = true
+        sock.send(JSON.stringify({ ticks: circSym, subscribe: 1 }))
+      }
+      sock.onopen = () => {
+        setCd([])
+        sock.send(JSON.stringify({ ticks_history: circSym, count: circN, end: 'latest', style: 'ticks' }))
+        subTimer = setTimeout(sub, 4000)
+      }
+      sock.onclose = () => { if (!dead) retry = setTimeout(run, 2000) }
+      sock.onmessage = (e) => {
+        const m = JSON.parse(e.data)
+        if (m.msg_type === 'history') {
+          const h = m.history || {}
+          const pip = m.pip_size ?? h.pip_size ?? 2
+          setCd((h.prices || []).map((p) => +Number(p).toFixed(pip).slice(-1)).slice(-circN))
+          sub()
+        } else if (m.msg_type === 'tick') {
+          const t = m.tick
+          const d = +t.quote.toFixed(t.pip_size).slice(-1)
+          setCd((a) => [...a.slice(-(circN - 1)), d])
+        } else if (m.error && m.echo_req && m.echo_req.ticks_history) {
+          sub()
+        }
+      }
+    }
+    const start = setTimeout(run, 600)
+    return () => {
+      dead = true
+      clearTimeout(start)
+      clearTimeout(retry)
+      clearTimeout(subTimer)
+      sock && sock.close()
+    }
+  }, [tab, circSym, circN])
+
   // ---------- OAuth callback ----------
   useEffect(() => {
     if (location.pathname === '/callback') {
@@ -546,6 +597,14 @@ export default function App() {
   const closed = hist.filter((h) => h.status === 'win' || h.status === 'loss')
   const wins = closed.filter((h) => h.status === 'win').length
   const net = closed.reduce((a, h) => a + (h.profit || 0), 0)
+  const cn = cd.length || 1
+  const ccount = Array(10).fill(0)
+  cd.forEach((d) => { ccount[d]++ })
+  const cmax = Math.max(...ccount)
+  const cmin = Math.min(...ccount)
+  const csecond = Math.max(-1, ...ccount.filter((c) => c < cmax))
+  const clast = cd[cd.length - 1]
+  const ccls = (c) => (cd.length === 0 ? '' : c === cmax ? 'g' : c === cmin ? 'r' : c === csecond ? 'b' : '')
   const cols = '110px repeat(' + al.digits.length + ', 1fr)'
 
   return (
@@ -640,6 +699,30 @@ export default function App() {
 
       {tab === 'alerts' && (
         <>
+          <section className="card">
+            <div className="pcthead">
+              <b>CIRCLES ANALYSIS</b>
+              <input type="number" min="100" max="5000" value={circNIn} onChange={(e) => setCircNIn(e.target.value)} />
+            </div>
+            <select value={circSym} onChange={(e) => setCircSym(e.target.value)}>
+              {SYMS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            </select>
+            <div className="circles">
+              {ccount.map((c, d) => (
+                <div className="cwrap" key={d}>
+                  <div className={'circ ' + ccls(c)}>
+                    <b>{d}</b>
+                    <small>{cd.length ? ((c / cn) * 100).toFixed(1) + '%' : '…'}</small>
+                  </div>
+                  <i className="tri">{clast === d ? '▲' : ''}</i>
+                </div>
+              ))}
+            </div>
+            <div className="muted">
+              {cd.length < circN ? 'Loading ' + cd.length + '/' + circN + ' ticks…' : 'Last ' + circN + ' ticks'} · green most · blue 2nd · red least
+            </div>
+          </section>
+
           <section className="card">
             <div className="pcthead">
               <b>DIGIT ALERTS</b>
