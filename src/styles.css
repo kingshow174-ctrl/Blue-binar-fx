@@ -81,3 +81,8 @@ html,body{overflow-x:hidden}
 .topbar h1{font-size:19px}
 .topbar .card{padding:6px}
 .topbar select,.topbar button{padding:8px}
+
+.result{display:flex;align-items:center;justify-content:center;gap:12px;padding:8px;border-radius:10px;font-weight:800;font-size:18px}
+.result.win{background:#0f3d28;border:1px solid var(--g)}
+.result.loss{background:#3a1420;border:1px solid var(--r)}
+.hit{width:52px;height:52px;display:grid;place-items:center;border-radius:12px;background:#fff;color:#000;font-size:32px;line-height:1}

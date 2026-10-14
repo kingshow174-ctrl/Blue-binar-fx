@@ -14,6 +14,19 @@ const NAMES = {
   DIGITEVEN: 'Even', DIGITODD: 'Odd', DIGITMATCH: 'Matches',
   DIGITDIFF: 'Differs', DIGITOVER: 'Over', DIGITUNDER: 'Under',
 }
+const TYPES = {
+  eo: ['DIGITEVEN', 'DIGITODD'],
+  md: ['DIGITMATCH', 'DIGITDIFF'],
+  ou: ['DIGITOVER', 'DIGITUNDER'],
+}
+const hasBarrier = (t) => t !== 'DIGITEVEN' && t !== 'DIGITODD'
+const isWin = (type, d, b) =>
+  type === 'DIGITEVEN' ? d % 2 === 0
+  : type === 'DIGITODD' ? d % 2 === 1
+  : type === 'DIGITMATCH' ? d === b
+  : type === 'DIGITDIFF' ? d !== b
+  : type === 'DIGITOVER' ? d > b
+  : d < b
 const norm = (a) => {
   const id = a.account_id || a.accountId || a.loginid || a.id
   const t = String(a.account_type || a.type || '').toLowerCase()
@@ -35,6 +48,17 @@ export default function App() {
   const tradeMeta = useRef(null)
   const subId = useRef(null)
   const noteTimer = useRef(null)
+  const armed = useRef({})
+  const reqType = useRef({})
+  const armTimer = useRef(null)
+  const buying = useRef(false)
+  const waiting = useRef([])
+  const resultTimer = useRef(null)
+  const symRef = useRef('R_100')
+  const pipRef = useRef(2)
+  const subbed = useRef(false)
+  const histTimer = useRef(null)
+
   const [token, setToken] = useState(sessionStorage.getItem('bbfx_token') || '')
   const [accounts, setAccounts] = useState([])
   const [accId, setAccId] = useState('')
@@ -51,18 +75,32 @@ export default function App() {
   const [stake, setStake] = useState(1)
   const [dur, setDur] = useState(1)
   const [win, setWin] = useState(100)
+  const [armKey, setArmKey] = useState(0)
   const [hist, setHist] = useState(loadHist)
   const [notice, setNotice] = useState('')
+  const [result, setResult] = useState(null)
+
+  symRef.current = symbol
 
   const note = (t) => {
     setNotice(t)
     clearTimeout(noteTimer.current)
     noteTimer.current = setTimeout(() => setNotice(''), 5000)
   }
+  const showResultTimer = () => {
+    clearTimeout(resultTimer.current)
+    resultTimer.current = setTimeout(() => setResult(null), 7000)
+  }
   const pubSend = (o) => pub.current?.readyState === 1 && pub.current.send(JSON.stringify(o))
   const trdSend = (o) => trd.current?.readyState === 1 && trd.current.send(JSON.stringify(o))
   const headers = { Authorization: 'Bearer ' + token, 'Deriv-App-ID': APP_ID }
   const acct = accounts.find((a) => a.id === accId)
+  const lastDigit = (v) => {
+    if (v == null) return undefined
+    const str = typeof v === 'number' ? v.toFixed(pipRef.current) : String(v)
+    const d = +str.slice(-1)
+    return Number.isNaN(d) ? undefined : d
+  }
 
   useEffect(() => { localStorage.bbfx_hist = JSON.stringify(hist.slice(0, 100)) }, [hist])
 
@@ -74,12 +112,6 @@ export default function App() {
   }, [])
 
   // Public ticks socket (auto-reconnect, preloads last 200 ticks)
-  const symRef = useRef('R_100')
-  const pipRef = useRef(2)
-  const subbed = useRef(false)
-  const histTimer = useRef(null)
-  symRef.current = symbol
-
   const subscribeTicks = () => {
     if (subbed.current) return
     subbed.current = true
@@ -120,8 +152,23 @@ export default function App() {
           const t = m.tick
           pipRef.current = t.pip_size
           const p = t.quote.toFixed(t.pip_size)
+          const dgt = +p.slice(-1)
           setPrice(p)
-          setDigits((d) => [...d.slice(-199), +p.slice(-1)])
+          setDigits((d) => [...d.slice(-199), dgt])
+          // instant provisional result on the tick that settles the contract
+          if (waiting.current.length) {
+            const ep = t.epoch ?? 0
+            waiting.current.forEach((w) => {
+              if (w.done || w.symbol !== symRef.current || ep <= w.pt) return
+              w.seen++
+              if (w.seen >= w.need) {
+                w.done = true
+                setResult({ digit: dgt, win: isWin(w.type, dgt, w.barrier), profit: null })
+                showResultTimer()
+                setHist((h) => h.map((x) => (String(x.id) === String(w.id) ? { ...x, exit: dgt } : x)))
+              }
+            })
+          }
         }
       }
     }
@@ -184,36 +231,78 @@ export default function App() {
     return () => { dead = true; s?.close(); setTradeOn(false) }
   }, [token, accId])
 
+  // Keep live proposals armed so a tap sends the buy immediately
+  useEffect(() => {
+    armed.current = {}
+    if (!tradeOn) return
+    clearTimeout(armTimer.current)
+    armTimer.current = setTimeout(() => {
+      trdSend({ forget_all: 'proposal' })
+      reqType.current = {}
+      TYPES[mode].forEach((type, i) => {
+        if (type === 'DIGITOVER' && barrier === 9) return
+        if (type === 'DIGITUNDER' && barrier === 0) return
+        const rid = i + 1
+        reqType.current[rid] = type
+        const p = {
+          proposal: 1, subscribe: 1, req_id: rid, amount: +stake || 1, basis: 'stake',
+          contract_type: type, currency: cur, duration: +dur || 1, duration_unit: 't',
+          underlying_symbol: symbol,
+        }
+        if (hasBarrier(type)) p.barrier = String(barrier)
+        trdSend(p)
+      })
+    }, 250)
+    return () => clearTimeout(armTimer.current)
+  }, [tradeOn, symbol, mode, barrier, stake, dur, cur, armKey])
+
   function onTrade(e) {
     const m = JSON.parse(e.data)
     if (m.error) {
       pending.current = null
+      buying.current = false
+      if (m.echo_req?.buy) setArmKey((k) => k + 1)
       return note('⚠ ' + (m.error.code || '') + ' ' + m.error.message)
     }
     if (m.msg_type === 'balance') {
       setBal(Number(m.balance.balance).toFixed(2))
       setCur(m.balance.currency)
-    } else if (m.msg_type === 'proposal' && pending.current) {
-      const st = pending.current
-      pending.current = null
-      subId.current = m.subscription?.id
-      tradeMeta.current = st
-      trdSend({ buy: m.proposal.id, price: Number(m.proposal.ask_price) || st.stake })
+    } else if (m.msg_type === 'proposal') {
+      const rid = m.req_id
+      if (rid === 99) {
+        const st = pending.current
+        if (!st) return
+        pending.current = null
+        subId.current = m.subscription?.id
+        tradeMeta.current = st
+        trdSend({ buy: m.proposal.id, price: Number(m.proposal.ask_price) || st.stake })
+      } else if (reqType.current[rid]) {
+        armed.current[reqType.current[rid]] = { id: m.proposal.id, ask: m.proposal.ask_price }
+      }
     } else if (m.msg_type === 'buy') {
+      buying.current = false
       if (subId.current) { trdSend({ forget: subId.current }); subId.current = null }
       const meta = tradeMeta.current || {}
       setHist((h) => [{
         id: m.buy.contract_id, t: Date.now(), symbol: meta.symbol, type: meta.type,
         barrier: meta.barrier, stake: Number(m.buy.buy_price), status: 'open',
       }, ...h].slice(0, 100))
+      waiting.current.push({
+        id: m.buy.contract_id, type: meta.type, barrier: meta.barrier, symbol: meta.symbol,
+        need: meta.dur || 1, pt: m.buy.purchase_time || 0, seen: 0,
+      })
       trdSend({ proposal_open_contract: 1, contract_id: m.buy.contract_id, subscribe: 1 })
+      setArmKey((k) => k + 1)
     } else if (m.msg_type === 'proposal_open_contract') {
       const c = m.proposal_open_contract
       if (c.is_sold) {
         const profit = Number(c.profit)
-        const ex = c.exit_tick_display_value != null ? String(c.exit_tick_display_value).slice(-1) : undefined
-        setHist((h) => h.map((x) => String(x.id) === String(c.contract_id)
-          ? { ...x, status: profit >= 0 ? 'win' : 'loss', profit, exit: ex } : x))
+        const ex = lastDigit(c.exit_tick_display_value ?? c.exit_tick ?? c.sell_spot_display_value ?? c.sell_spot)
+        waiting.current = waiting.current.filter((w) => String(w.id) !== String(c.contract_id))
+        setHist((h) => h.map((x) => (String(x.id) === String(c.contract_id)
+          ? { ...x, status: profit >= 0 ? 'win' : 'loss', profit, exit: ex ?? x.exit } : x)))
+        setResult((r) => ({ ...(r || {}), digit: ex ?? r?.digit, win: profit >= 0, profit }))
+        showResultTimer()
         if (m.subscription) trdSend({ forget: m.subscription.id })
       }
     }
@@ -221,19 +310,31 @@ export default function App() {
 
   const trade = (type) => {
     if (!tradeOn) return note('Log in first')
-    if (pending.current) return
+    if (buying.current) return
     if (acct && !acct.demo && !confirm('REAL account. Place this trade?')) return
     if (type === 'DIGITOVER' && barrier === 9) return note('Over needs digit 0-8')
     if (type === 'DIGITUNDER' && barrier === 0) return note('Under needs digit 1-9')
-    const hasB = type !== 'DIGITEVEN' && type !== 'DIGITODD'
-    const p = {
-      proposal: 1, subscribe: 1, amount: +stake, basis: 'stake', contract_type: type, currency: cur,
-      duration: +dur, duration_unit: 't', underlying_symbol: symbol,
+    const meta = {
+      stake: +stake || 1, symbol, type, dur: +dur || 1,
+      barrier: hasBarrier(type) ? barrier : null,
     }
-    if (hasB) p.barrier = String(barrier)
-    pending.current = { stake: +stake || 1, symbol, type, barrier: hasB ? barrier : null }
-    setTimeout(() => { pending.current = null }, 8000)
-    trdSend(p)
+    tradeMeta.current = meta
+    buying.current = true
+    setTimeout(() => { buying.current = false }, 8000)
+    const a = armed.current[type]
+    if (a?.id) {
+      delete armed.current[type]
+      trdSend({ buy: a.id, price: Number(a.ask) || meta.stake })
+    } else {
+      pending.current = meta
+      const p = {
+        proposal: 1, subscribe: 1, req_id: 99, amount: meta.stake, basis: 'stake',
+        contract_type: type, currency: cur, duration: meta.dur, duration_unit: 't',
+        underlying_symbol: symbol,
+      }
+      if (hasBarrier(type)) p.barrier = String(barrier)
+      trdSend(p)
+    }
   }
 
   function logout() {
@@ -241,14 +342,10 @@ export default function App() {
     setToken(''); setAccounts([]); setAccId(''); setBal('')
   }
 
-  const last100 = digits.slice(-100)
-  const counts = Array(10).fill(0)
-  last100.forEach((d) => counts[d]++)
-  const n = last100.length || 1
-  const max = Math.max(...counts)
-  const min = Math.min(...counts)
   const last = digits[digits.length - 1]
-  const evenPct = Math.round((counts.filter((_, i) => i % 2 === 0).reduce((a, b) => a + b, 0) / n) * 100)
+  const last100 = digits.slice(-100)
+  const evenPct = last100.length
+    ? Math.round((last100.filter((d) => d % 2 === 0).length / last100.length) * 100) : 0
 
   const sample = digits.slice(-Math.max(10, Math.min(200, +win || 100)))
   const sn = sample.length || 1
@@ -265,41 +362,42 @@ export default function App() {
       : mode === 'md'
       ? [['MATCH ' + barrier, cnt((d) => d === barrier), 'g'], ['DIFFERS ' + barrier, cnt((d) => d !== barrier), 'r']]
       : [['OVER ' + barrier, cnt((d) => d > barrier), 'g'], ['SAME ' + barrier, cnt((d) => d === barrier), 'b'], ['UNDER ' + barrier, cnt((d) => d < barrier), 'r']]
-    const closed = hist.filter((h) => h.status === 'win' || h.status === 'loss')
+
+  const closed = hist.filter((h) => h.status === 'win' || h.status === 'loss')
   const wins = closed.filter((h) => h.status === 'win').length
   const net = closed.reduce((a, h) => a + (h.profit || 0), 0)
 
   return (
     <div className="app">
       <div className="topbar">
-      <header>
-        <h1>Blue Binary <span>FX</span></h1>
-        <div className="acct">
-          <i className={'dot ' + (token ? (tradeOn ? 'online' : 'connecting') : status)} />
-          {token ? (bal ? `${bal} ${cur}` : '...') : status}
-        </div>
-      </header>
-
-      <section className="card">
-        {!token ? (
-          <button className="save" onClick={login}>Log in with Deriv</button>
-        ) : (
-          <div className="row">
-            <select value={accId} onChange={(e) => setAccId(e.target.value)}>
-              {accounts.map((a) => <option key={a.id} value={a.id}>{a.demo ? 'DEMO' : 'REAL'} · {a.id}</option>)}
-            </select>
-            <button onClick={logout}>Log out</button>
+        <header>
+          <h1>Blue Binary <span>FX</span></h1>
+          <div className="acct">
+            <i className={'dot ' + (token ? (tradeOn ? 'online' : 'connecting') : status)} />
+            {token ? (bal ? `${bal} ${cur}` : '...') : status}
           </div>
-        )}
-      </section>
+        </header>
 
-      <div className="tabs">
-        <button className={tab === 'trader' ? 'on' : ''} onClick={() => setTab('trader')}>Trader</button>
-        <button className={tab === 'history' ? 'on' : ''} onClick={() => setTab('history')}>
-          History{hist.length ? ` (${hist.length})` : ''}
-        </button>
+        <section className="card">
+          {!token ? (
+            <button className="save" onClick={login}>Log in with Deriv</button>
+          ) : (
+            <div className="row">
+              <select value={accId} onChange={(e) => setAccId(e.target.value)}>
+                {accounts.map((a) => <option key={a.id} value={a.id}>{a.demo ? 'DEMO' : 'REAL'} · {a.id}</option>)}
+              </select>
+              <button onClick={logout}>Log out</button>
+            </div>
+          )}
+        </section>
+
+        <div className="tabs">
+          <button className={tab === 'trader' ? 'on' : ''} onClick={() => setTab('trader')}>Trader</button>
+          <button className={tab === 'history' ? 'on' : ''} onClick={() => setTab('history')}>
+            History{hist.length ? ` (${hist.length})` : ''}
+          </button>
+        </div>
       </div>
-    </div>
 
       {tab === 'trader' && (
         <>
@@ -369,7 +467,7 @@ export default function App() {
               <div>
                 <b>{NAMES[h.type] || h.type}{h.barrier != null ? ' ' + h.barrier : ''}</b>
                 <small>{SYMN[h.symbol] || h.symbol}</small>
-                <small>{fmtTime(h.t)} · stake {h.stake}{h.exit != null ? ` · exit digit ${h.exit}` : ''}</small>
+                <small>{fmtTime(h.t)} · stake {h.stake}{h.exit != null ? ` · hit ${h.exit}` : ''}</small>
               </div>
               <div className={'pl ' + h.status}>
                 {h.status === 'open' ? '...' : h.status === 'unknown' ? '?' : (h.profit >= 0 ? '+' : '') + Number(h.profit).toFixed(2)}
@@ -385,25 +483,30 @@ export default function App() {
       {tab === 'trader' && (
         <div className="overlay">
           <div className="inner">
+            {result && (
+              <div className={'result ' + (result.win ? 'win' : 'loss')}>
+                <b className="hit">{result.digit ?? '?'}</b>
+                <span>
+                  {result.win ? 'WIN' : 'LOSS'}
+                  {result.profit != null ? ` ${result.profit >= 0 ? '+' : ''}${Number(result.profit).toFixed(2)}` : ''}
+                </span>
+              </div>
+            )}
             {notice && <div className="notice">{notice}</div>}
-            {mode === 'eo' && (
-              <div className="row">
+            <div className="row">
+              {mode === 'eo' && (<>
                 <button className="buy even" onClick={() => trade('DIGITEVEN')}>EVEN</button>
                 <button className="buy odd" onClick={() => trade('DIGITODD')}>ODD</button>
-              </div>
-            )}
-            {mode === 'md' && (
-              <div className="row">
+              </>)}
+              {mode === 'md' && (<>
                 <button className="buy even" onClick={() => trade('DIGITMATCH')}>MATCHES {barrier}</button>
                 <button className="buy odd" onClick={() => trade('DIGITDIFF')}>DIFFERS {barrier}</button>
-              </div>
-            )}
-            {mode === 'ou' && (
-              <div className="row">
+              </>)}
+              {mode === 'ou' && (<>
                 <button className="buy even" onClick={() => trade('DIGITOVER')}>OVER {barrier}</button>
                 <button className="buy odd" onClick={() => trade('DIGITUNDER')}>UNDER {barrier}</button>
-              </div>
-            )}
+              </>)}
+            </div>
           </div>
         </div>
       )}
