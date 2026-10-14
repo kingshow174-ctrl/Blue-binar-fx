@@ -122,7 +122,7 @@ export default function App() {
   const audio = useRef(null)
   const ringTimer = useRef(null)
   alRef.current = al
-  const alN = Math.max(10, Math.min(200, +al.n || 100))
+  const alN = Math.max(10, Math.min(5000, +al.n || 100))
   const setA = (patch) => setAl((a) => ({ ...a, ...patch }))
   useEffect(() => { localStorage.bbfx_alert = JSON.stringify(al) }, [al])
 
@@ -173,7 +173,7 @@ export default function App() {
   }
   const checkAlerts = (sym) => {
     const a = alRef.current
-    const n = Math.max(10, Math.min(200, +a.n || 100))
+    const n = Math.max(10, Math.min(5000, +a.n || 100))
     const thr = parseFloat(a.thr)
     if (Number.isNaN(thr)) return
     const arr = mon.current[sym] || []
@@ -210,6 +210,7 @@ export default function App() {
     let dead = false
     let retry
     const syms = al.syms
+    const N = Math.max(10, Math.min(5000, +alRef.current.n || 100))
     fired.current.clear()
     const connect = () => {
       const sock = new WebSocket(PUBLIC_WS)
@@ -223,7 +224,7 @@ export default function App() {
       sock.onopen = () => {
         mon.current = {}
         syms.forEach((sym) => {
-          sock.send(JSON.stringify({ ticks_history: sym, count: 200, end: 'latest', style: 'ticks' }))
+          sock.send(JSON.stringify({ ticks_history: sym, count: N, end: 'latest', style: 'ticks' }))
           setTimeout(() => sub(sym), 3000)
         })
       }
@@ -236,7 +237,7 @@ export default function App() {
           const h = m.history || {}
           const pip = m.pip_size ?? h.pip_size ?? monPip.current[sym] ?? 2
           monPip.current[sym] = pip
-          mon.current[sym] = (h.prices || []).map((p) => +Number(p).toFixed(pip).slice(-1)).slice(-200)
+          mon.current[sym] = (h.prices || []).map((p) => +Number(p).toFixed(pip).slice(-1)).slice(-N)
           sub(sym)
           checkAlerts(sym)
           return
@@ -252,7 +253,7 @@ export default function App() {
           if (!sym) return
           monPip.current[sym] = t.pip_size
           const d = +t.quote.toFixed(t.pip_size).slice(-1)
-          mon.current[sym] = [...(mon.current[sym] || []).slice(-199), d]
+          mon.current[sym] = [...(mon.current[sym] || []).slice(-(N - 1)), d]
           checkAlerts(sym)
         }
       }
@@ -750,7 +751,7 @@ export default function App() {
             </div>
             <div className="row">
               <label>Over last ticks
-                <input type="number" min="10" max="200" disabled={monOn} value={al.n} onChange={(e) => setA({ n: e.target.value })} />
+                <input type="number" min="10" max="5000" disabled={monOn} value={al.n} onChange={(e) => setA({ n: e.target.value })} />
               </label>
               <label>Sound
                 <select value={al.sound ? 'on' : 'off'} onChange={(e) => setA({ sound: e.target.value === 'on' })}>
