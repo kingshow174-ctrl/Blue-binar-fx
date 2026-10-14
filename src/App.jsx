@@ -82,6 +82,188 @@ export default function App() {
 
   symRef.current = symbol
 
+  // ---------- Digit alerts: scans several markets in the background ----------
+  const defAlert = { digits: [], thr: 15, dir: 'above', n: 100, syms: SYMS.map((x) => x[0]), sound: true }
+  const [al, setAl] = useState(() => {
+    try { return { ...defAlert, ...JSON.parse(localStorage.bbfx_alert || '{}') } } catch { return defAlert }
+  })
+  const [armed, setArmed] = useState(false)
+  const [popups, setPopups] = useState([])
+  const [alog, setAlog] = useState([])
+  const [, force] = useState(0)
+  const mon = useRef({})
+  const monPip = useRef({})
+  const monWs = useRef(null)
+  const fired = useRef(new Set())
+  const alRef = useRef(al)
+  const audio = useRef(null)
+  const ringTimer = useRef(null)
+  alRef.current = al
+  const alN = Math.max(10, Math.min(200, +al.n || 100))
+  const setA = (patch) => setAl((a) => ({ ...a, ...patch }))
+  useEffect(() => { localStorage.bbfx_alert = JSON.stringify(al) }, [al])
+
+  const unlockAudio = () => {
+    try {
+      if (!audio.current) audio.current = new (window.AudioContext || window.webkitAudioContext)()
+      audio.current.resume()
+    } catch (e) {}
+  }
+  const ring = () => {
+    const ctx = audio.current
+    if (ctx && alRef.current.sound) {
+      const now = ctx.currentTime
+      for (let i = 0; i < 6; i++) {
+        const o = ctx.createOscillator()
+        const g = ctx.createGain()
+        const t = now + i * 0.22
+        o.type = 'sine'
+        o.frequency.value = i % 2 ? 880 : 1175
+        g.gain.setValueAtTime(0.0001, t)
+        g.gain.exponentialRampToValueAtTime(0.4, t + 0.02)
+        g.gain.exponentialRampToValueAtTime(0.0001, t + 0.2)
+        o.connect(g)
+        g.connect(ctx.destination)
+        o.start(t)
+        o.stop(t + 0.21)
+      }
+    }
+    if (navigator.vibrate) navigator.vibrate([300, 150, 300, 150, 300])
+  }
+  const stopRing = () => { clearInterval(ringTimer.current); ringTimer.current = null }
+  const startRing = () => {
+    ring()
+    if (!ringTimer.current) {
+      let k = 0
+      ringTimer.current = setInterval(() => { ring(); if (++k >= 6) stopRing() }, 2500)
+    }
+  }
+  const dismiss = () => { setPopups([]); stopRing() }
+  const go = (sym) => { setSymbol(sym); setTab('trader'); dismiss() }
+  const pctOf = (arr, n, d) => {
+    const w = arr.slice(-n)
+    return w.length ? (w.filter((x) => x === d).length / w.length) * 100 : 0
+  }
+  const hitOf = (p) => {
+    const thr = parseFloat(al.thr)
+    return !Number.isNaN(thr) && (al.dir === 'above' ? p >= thr : p <= thr)
+  }
+  const checkAlerts = (sym) => {
+    const a = alRef.current
+    const n = Math.max(10, Math.min(200, +a.n || 100))
+    const thr = parseFloat(a.thr)
+    if (Number.isNaN(thr)) return
+    const arr = mon.current[sym] || []
+    if (arr.length < n) return
+    a.digits.forEach((d) => {
+      const p = pctOf(arr, n, d)
+      const hit = a.dir === 'above' ? p >= thr : p <= thr
+      const key = sym + ':' + d
+      if (hit && !fired.current.has(key)) {
+        fired.current.add(key)
+        const item = { id: key + ':' + Date.now(), t: Date.now(), sym, digit: d, pct: p }
+        setAlog((l) => [item, ...l].slice(0, 30))
+        setPopups((ps) => [item, ...ps.filter((x) => !(x.sym === sym && x.digit === d))].slice(0, 6))
+        startRing()
+      } else if (!hit) {
+        fired.current.delete(key)
+      }
+    })
+  }
+  const toggleArm = () => {
+    if (armed) { setArmed(false); dismiss(); return }
+    if (!al.digits.length) return note('Pick at least one digit')
+    if (!al.syms.length) return note('Pick at least one market')
+    unlockAudio()
+    setArmed(true)
+  }
+  const togDigit = (d) =>
+    setA({ digits: al.digits.includes(d) ? al.digits.filter((x) => x !== d) : [...al.digits, d].sort((a, b) => a - b) })
+  const togSym = (v) =>
+    setA({ syms: al.syms.includes(v) ? al.syms.filter((x) => x !== v) : [...al.syms, v] })
+
+  // monitor socket (separate from the trading screen)
+  useEffect(() => {
+    if (!armed) return
+    let dead = false
+    let retry
+    const syms = al.syms
+    fired.current.clear()
+    const connect = () => {
+      const sock = new WebSocket(PUBLIC_WS)
+      monWs.current = sock
+      const subd = new Set()
+      const sub = (sym) => {
+        if (subd.has(sym) || sock.readyState !== 1) return
+        subd.add(sym)
+        sock.send(JSON.stringify({ ticks: sym, subscribe: 1 }))
+      }
+      sock.onopen = () => {
+        mon.current = {}
+        syms.forEach((sym) => {
+          sock.send(JSON.stringify({ ticks_history: sym, count: 200, end: 'latest', style: 'ticks' }))
+          setTimeout(() => sub(sym), 3000)
+        })
+      }
+      sock.onclose = () => { if (!dead) retry = setTimeout(connect, 2000) }
+      sock.onmessage = (e) => {
+        const m = JSON.parse(e.data)
+        if (m.msg_type === 'history') {
+          const sym = m.echo_req && m.echo_req.ticks_history
+          if (!sym) return
+          const h = m.history || {}
+          const pip = m.pip_size ?? h.pip_size ?? monPip.current[sym] ?? 2
+          monPip.current[sym] = pip
+          mon.current[sym] = (h.prices || []).map((p) => +Number(p).toFixed(pip).slice(-1)).slice(-200)
+          sub(sym)
+          checkAlerts(sym)
+          return
+        }
+        if (m.error) {
+          const sym = m.echo_req && m.echo_req.ticks_history
+          if (sym) sub(sym)
+          return
+        }
+        if (m.msg_type === 'tick') {
+          const t = m.tick
+          const sym = t.symbol ?? t.underlying_symbol ?? (m.echo_req && m.echo_req.ticks)
+          if (!sym) return
+          monPip.current[sym] = t.pip_size
+          const d = +t.quote.toFixed(t.pip_size).slice(-1)
+          mon.current[sym] = [...(mon.current[sym] || []).slice(-199), d]
+          checkAlerts(sym)
+        }
+      }
+    }
+    connect()
+    const refresh = setInterval(() => force((x) => x + 1), 1000)
+    const vis = () => { if (document.visibilityState === 'visible') monWs.current && monWs.current.close() }
+    document.addEventListener('visibilitychange', vis)
+    return () => {
+      dead = true
+      clearTimeout(retry)
+      clearInterval(refresh)
+      document.removeEventListener('visibilitychange', vis)
+      monWs.current && monWs.current.close()
+    }
+  }, [armed, al.syms.join(',')])
+
+  // keep the screen awake while monitoring
+  useEffect(() => {
+    if (!armed) return
+    let lock
+    const get = () => {
+      if (navigator.wakeLock) navigator.wakeLock.request('screen').then((l) => { lock = l }).catch(() => {})
+    }
+    get()
+    const v = () => { if (document.visibilityState === 'visible') get() }
+    document.addEventListener('visibilitychange', v)
+    return () => {
+      document.removeEventListener('visibilitychange', v)
+      if (lock && lock.release) lock.release()
+    }
+  }, [armed])
+
   const note = (t) => {
     setNotice(t)
     clearTimeout(noteTimer.current)
@@ -394,8 +576,9 @@ export default function App() {
         <div className="tabs">
           <button className={tab === 'trader' ? 'on' : ''} onClick={() => setTab('trader')}>Trader</button>
           <button className={tab === 'history' ? 'on' : ''} onClick={() => setTab('history')}>
-            History{hist.length ? ` (${hist.length})` : ''}
+            History{hist.length ? ' (' + hist.length + ')' : ''}
           </button>
+          <button className={tab === 'alerts' ? 'on' : ''} onClick={() => setTab('alerts')}>Alerts{armed ? ' 🔔' : ''}</button>
         </div>
       </div>
 
@@ -451,6 +634,96 @@ export default function App() {
               <label>Ticks<input type="number" min="1" max="10" value={dur} onChange={(e) => setDur(e.target.value)} /></label>
             </div>
           </section>
+        </>
+      )}
+
+      {tab === 'alerts' && (
+        <>
+          <section className="card">
+            <div className="pcthead">
+              <b>DIGIT ALERTS</b>
+              <button className={'armbtn ' + (armed ? 'on' : '')} onClick={toggleArm}>{armed ? 'Stop' : 'Start'}</button>
+            </div>
+            <div className="muted">
+              {armed ? 'Monitoring. Keep this page open and the screen on.' : 'Pick digits and a percentage, then tap Start.'}
+            </div>
+            <div className="muted">Digits to watch</div>
+            <div className="pick">
+              {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((d) => (
+                <button key={d} disabled={armed} className={al.digits.includes(d) ? 'on' : ''} onClick={() => togDigit(d)}>{d}</button>
+              ))}
+            </div>
+            <div className="row">
+              <label>Ring when digit is
+                <select disabled={armed} value={al.dir} onChange={(e) => setA({ dir: e.target.value })}>
+                  <option value="above">at or above</option>
+                  <option value="below">at or below</option>
+                </select>
+              </label>
+              <label>Percent
+                <input type="number" min="0" max="100" step="0.5" disabled={armed} value={al.thr} onChange={(e) => setA({ thr: e.target.value })} />
+              </label>
+            </div>
+            <div className="row">
+              <label>Over last ticks
+                <input type="number" min="10" max="200" disabled={armed} value={al.n} onChange={(e) => setA({ n: e.target.value })} />
+              </label>
+              <label>Sound
+                <select value={al.sound ? 'on' : 'off'} onChange={(e) => setA({ sound: e.target.value === 'on' })}>
+                  <option value="on">On</option>
+                  <option value="off">Off</option>
+                </select>
+              </label>
+            </div>
+            <button onClick={() => { unlockAudio(); ring() }}>Test sound</button>
+          </section>
+
+          <section className="card">
+            <div className="muted">Markets to scan</div>
+            <div className="chips">
+              {SYMS.map(([v, l]) => (
+                <button key={v} disabled={armed} className={al.syms.includes(v) ? 'on' : ''} onClick={() => togSym(v)}>{l}</button>
+              ))}
+            </div>
+          </section>
+
+          {armed && (
+            <section className="card">
+              <div className="muted">Live scan (last {alN} ticks, green = alert level reached)</div>
+              <div className="srow" style={{ gridTemplateColumns: '110px repeat(' + al.digits.length + ', 1fr)' }}>
+                <span />
+                {al.digits.map((d) => <b key={d} className="sh">{d}</b>)}
+              </div>
+              {al.syms.map((sym) => {
+                const arr = mon.current[sym] || []
+                const ready = arr.length >= alN
+                return (
+                  <div className="srow" key={sym} style={{ gridTemplateColumns: '110px repeat(' + al.digits.length + ', 1fr)' }}>
+                    <button className="sname" onClick={() => go(sym)}>{SYMN[sym]}</button>
+                    {al.digits.map((d) => {
+                      const p = pctOf(arr, alN, d)
+                      return <span key={d} className={'sc' + (ready && hitOf(p) ? ' hit' : '')}>{ready ? Math.round(p) + '%' : '…'}</span>
+                    })}
+                  </div>
+                )
+              })}
+            </section>
+          )}
+
+          {alog.length > 0 && (
+            <section className="card">
+              <div className="muted">Recent alerts</div>
+              {alog.map((p) => (
+                <div className="h" key={p.id}>
+                  <div>
+                    <b>{SYMN[p.sym]}</b>
+                    <small>digit {p.digit} · {p.pct.toFixed(1)}% · {fmtTime(p.t)}</small>
+                  </div>
+                  <button onClick={() => go(p.sym)}>Go</button>
+                </div>
+              ))}
+            </section>
+          )}
         </>
       )}
 
@@ -510,7 +783,24 @@ export default function App() {
           </div>
         </div>
       )}
-      {tab === 'history' && notice && <div className="notice floating">{notice}</div>}
+      {tab !== 'trader' && notice && <div className="notice floating">{notice}</div>}
+      {popups.length > 0 && (
+        <div className="alertpop">
+          <div className="ap-card">
+            <b>🔔 Digit alert</b>
+            {popups.map((p) => (
+              <div className="ap-row" key={p.id}>
+                <div>
+                  <b>{SYMN[p.sym]}</b>
+                  <small>digit {p.digit} is at {p.pct.toFixed(1)}% (last {alN} ticks). Switch to this volatility.</small>
+                </div>
+                <button className="save" onClick={() => go(p.sym)}>Switch</button>
+              </div>
+            ))}
+            <button onClick={dismiss}>Dismiss</button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
