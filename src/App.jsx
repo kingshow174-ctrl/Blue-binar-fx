@@ -54,6 +54,7 @@ export default function App() {
   const reqType = useRef({})
   const armTimer = useRef(null)
   const buying = useRef(false)
+  const retried = useRef(false)
   const waiting = useRef([])
   const resultTimer = useRef(null)
   const symRef = useRef('R_100')
@@ -493,6 +494,19 @@ export default function App() {
   function onTrade(e) {
     const m = JSON.parse(e.data)
     if (m.error) {
+      const meta = tradeMeta.current
+      if (m.echo_req?.buy && meta && !retried.current) {
+        retried.current = true
+        pending.current = meta
+        const p = {
+          proposal: 1, subscribe: 1, req_id: 99, amount: meta.stake, basis: 'stake',
+          contract_type: meta.type, currency: meta.cur || 'USD', duration: meta.dur,
+          duration_unit: 't', underlying_symbol: meta.symbol,
+        }
+        if (hasBarrier(meta.type)) p.barrier = String(meta.barrier)
+        trdSend(p)
+        return note('Deriv busy, retrying…')
+      }
       pending.current = null
       buying.current = false
       if (m.echo_req?.buy) setArmKey((k) => k + 1)
@@ -549,10 +563,11 @@ export default function App() {
     if (type === 'DIGITOVER' && barrier === 9) return note('Over needs digit 0-8')
     if (type === 'DIGITUNDER' && barrier === 0) return note('Under needs digit 1-9')
     const meta = {
-      stake: +stake || 1, symbol, type, dur: +dur || 1,
+      stake: +stake || 1, symbol, type, dur: +dur || 1, cur,
       barrier: hasBarrier(type) ? barrier : null,
     }
     tradeMeta.current = meta
+    retried.current = false
     buying.current = true
     setTimeout(() => { buying.current = false }, 8000)
     const a = armedProps.current[type]
