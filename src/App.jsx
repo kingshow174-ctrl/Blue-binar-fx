@@ -292,6 +292,7 @@ export default function App() {
   const [circNIn, setCircNIn] = useState(1000)
   const [cd, setCd] = useState([])
   const circN = Math.max(100, Math.min(5000, +circNIn || 1000))
+  useEffect(() => { setCircSym(symbol) }, [symbol])
   useEffect(() => {
     if (tab !== 'alerts') return
     let dead = false
@@ -712,7 +713,10 @@ export default function App() {
             <div className="circles">
               {ccount.map((c, d) => (
                 <div className="cwrap" key={d}>
-                  <div className={'circ ' + ccls(c)}>
+                  <i className="pill">
+                    {(al.digits.includes(d) ? '🔔' : '') + (al.digits.includes(d) && mode !== 'eo' && barrier === d ? ' ' : '') + (mode !== 'eo' && barrier === d ? 'TRADE' : '')}
+                  </i>
+                  <div className={'circ ' + ccls(c) + (mode !== 'eo' && barrier === d ? ' tsel' : '')}>
                     <b>{d}</b>
                     <small>{cd.length ? ((c / cn) * 100).toFixed(1) + '%' : '…'}</small>
                   </div>
@@ -723,6 +727,12 @@ export default function App() {
             <div className="muted">
               {cd.length < circN ? 'Loading ' + cd.length + '/' + circN + ' ticks…' : 'Last ' + circN + ' ticks'} · green most · blue 2nd · red least
             </div>
+            <div className="muted">white outline = your trade digit · 🔔 = alert digit</div>
+            {circSym !== symbol && (
+              <button onClick={() => setCircSym(symbol)}>
+                Showing {SYMN[circSym]}. Tap to show your trading market ({SYMN[symbol]})
+              </button>
+            )}
           </section>
 
           <section className="card">
