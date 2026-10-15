@@ -17,13 +17,20 @@ const TYPEN = Object.fromEntries(TYPES)
 const CONDS = [['lt', 'is under'], ['gt', 'is over'], ['eq', 'equals'], ['even', 'is even'], ['odd', 'is odd']]
 const CONDN = Object.fromEntries(CONDS)
 const hasB = (t) => t !== 'DIGITEVEN' && t !== 'DIGITODD'
+const isWin = (type, d, b) =>
+  type === 'DIGITEVEN' ? d % 2 === 0
+  : type === 'DIGITODD' ? d % 2 === 1
+  : type === 'DIGITMATCH' ? d === b
+  : type === 'DIGITDIFF' ? d !== b
+  : type === 'DIGITOVER' ? d > b
+  : d < b
 const test = (cond, n, d) =>
   cond === 'lt' ? d < n : cond === 'gt' ? d > n : cond === 'eq' ? d === n : cond === 'even' ? d % 2 === 0 : d % 2 === 1
 const parseStakes = (s) =>
   String(s).split(/[\s,;]+/).map(Number).filter((x) => isFinite(x) && x >= 0.35)
 const DEF = {
   condK: 1, cond: 'lt', condN: 2, type: 'DIGITOVER', barrier: 1, dur: 1,
-  stakes: '1, 2, 4, 8', end: 'restart', sl: 10, tp: 10, syms: ['R_100'],
+  stakes: '1, 2, 4, 8', end: 'restart', after: 'win', sl: 10, tp: 10, syms: ['R_100'],
 }
 
 export default function Multi({ tradeOn, send, cur, demo, addHist, updHist }) {
@@ -35,6 +42,7 @@ export default function Multi({ tradeOn, send, cur, demo, addHist, updHist }) {
   const [log, setLog] = useState([])
   const [msg, setMsg] = useState('')
   const [watch, setWatch] = useState('')
+  const [waitTxt, setWaitTxt] = useState('')
   const [, force] = useState(0)
 
   const cfgRef = useRef(cfg)
@@ -49,6 +57,7 @@ export default function Multi({ tradeOn, send, cur, demo, addHist, updHist }) {
   const openC = useRef(null)
   const seq = useRef(500)
   const dog = useRef(null)
+  const gate = useRef(null)
   const sendRef = useRef(send)
   const tradeOnRef = useRef(tradeOn)
   const curRef = useRef(cur)
@@ -69,6 +78,8 @@ export default function Multi({ tradeOn, send, cur, demo, addHist, updHist }) {
   }
 
   const stopBot = (why) => {
+    gate.current = null
+    setWaitTxt('')
     runRef.current = false
     setRunning(false)
     clearTimeout(dog.current)
@@ -102,13 +113,33 @@ export default function Multi({ tradeOn, send, cur, demo, addHist, updHist }) {
     }, 12000)
   }
 
-  const evalTick = (sym) => {
-    if (!runRef.current || busy.current || !tradeOnRef.current) return
+  const condMet = (sym) => {
     const c = cfgRef.current
     const k = Math.max(1, +c.condK || 1)
     const a = digs.current[sym] || []
-    if (a.length < k) return
-    if (a.slice(-k).every((d) => test(c.cond, +c.condN, d))) place(sym)
+    return a.length >= k && a.slice(-k).every((d) => test(c.cond, +c.condN, d))
+  }
+
+  const evalTick = (sym) => {
+    if (!runRef.current || busy.current || !tradeOnRef.current) return
+    const g = gate.current
+    if (g) {
+      if (sym !== g.sym) return
+      const a = digs.current[sym] || []
+      const d = a[a.length - 1]
+      if (g.mode === 'win') {
+        if (!g.ok) {
+          if (isWin(g.type, d, g.barrier)) g.ok = true
+          return
+        }
+      } else if (!g.sawFalse) {
+        if (!condMet(sym)) g.sawFalse = true
+        return
+      }
+      gate.current = null
+      setWaitTxt('')
+    }
+    if (condMet(sym)) place(sym)
   }
 
   const finish = (c) => {
@@ -135,6 +166,18 @@ export default function Multi({ tradeOn, send, cur, demo, addHist, updHist }) {
       }
     }
     idxRef.current = idx
+    if (profit < 0 && cfgRef.current.after !== 'now') {
+      const mode = cfgRef.current.after === 'fresh' ? 'fresh' : 'win'
+      gate.current = { mode, sym: o.meta.sym, type: o.meta.type, barrier: o.meta.barrier, ok: false, sawFalse: false }
+      setWaitTxt(
+        mode === 'win'
+          ? 'Waiting after the loss: needs a winning digit (' + TYPEN[o.meta.type] + (o.meta.barrier !== null ? ' ' + o.meta.barrier : '') + ') on ' + SYMN[o.meta.sym] + ', then the next signal'
+          : 'Waiting after the loss: the signal must clear and appear again on ' + SYMN[o.meta.sym]
+      )
+    } else {
+      gate.current = null
+      setWaitTxt('')
+    }
     setStats((s) => ({
       net: netRef.current, trades: s.trades + 1, wins: s.wins + (profit >= 0 ? 1 : 0),
       losses: s.losses + (profit < 0 ? 1 : 0), idx,
@@ -295,6 +338,8 @@ export default function Multi({ tradeOn, send, cur, demo, addHist, updHist }) {
     if (c.type === 'DIGITOVER' && +c.barrier === 9) return setMsg('Over needs a digit 0-8')
     if (c.type === 'DIGITUNDER' && +c.barrier === 0) return setMsg('Under needs a digit 1-9')
     if (!demo && !confirm('REAL account. The bot will place trades automatically with real money. Start?')) return
+    gate.current = null
+    setWaitTxt('')
     netRef.current = 0
     idxRef.current = 0
     errs.current = 0
@@ -357,6 +402,7 @@ export default function Multi({ tradeOn, send, cur, demo, addHist, updHist }) {
           {running ? 'STOP' : 'START'}
         </button>
         {msg && <div className="muted">{msg}</div>}
+        {waitTxt && <div className="waitbox">⏳ {waitTxt}</div>}
         <div className="sum">
           <div><small>Net P/L</small><b className={stats.net >= 0 ? 'win' : 'loss'}>{stats.net >= 0 ? '+' : ''}{stats.net.toFixed(2)}</b></div>
           <div><small>Win / Loss</small><b>{stats.wins} / {stats.losses}</b></div>
@@ -419,6 +465,13 @@ export default function Multi({ tradeOn, send, cur, demo, addHist, updHist }) {
             <input type="number" min="0" step="0.5" disabled={running} value={cfg.sl} onChange={(e) => setC({ sl: e.target.value })} />
           </label>
         </div>
+        <label>After a loss
+          <select disabled={running} value={cfg.after} onChange={(e) => setC({ after: e.target.value })}>
+            <option value="win">Wait for a winning digit, then the next signal</option>
+            <option value="fresh">Wait until the signal clears and appears again</option>
+            <option value="now">Trade on the very next signal</option>
+          </select>
+        </label>
         <label>Take profit (0 = off)
           <input type="number" min="0" step="0.5" disabled={running} value={cfg.tp} onChange={(e) => setC({ tp: e.target.value })} />
         </label>

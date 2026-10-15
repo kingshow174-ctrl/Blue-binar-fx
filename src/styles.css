@@ -132,3 +132,5 @@ button:disabled{opacity:.5}
 .mrow b{text-align:center;font-size:18px}
 .met{text-align:center;font-size:12px;color:var(--mut)}
 .met.on{background:var(--g);color:#032;font-weight:800;border-radius:6px;padding:4px 0}
+
+.waitbox{background:#2a2410;border:1px solid #d69e2e;color:#faf089;padding:8px 10px;border-radius:8px;font-size:13px}
