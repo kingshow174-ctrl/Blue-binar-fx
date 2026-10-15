@@ -352,6 +352,20 @@ export default function App() {
     }
   }, [tab, circSym, circN])
 
+  // pick up a login finished in another window
+  useEffect(() => {
+    const sync = () => {
+      const t = localStorage.getItem('bbfx_token') || ''
+      setToken((cur) => (t && t !== cur ? t : cur))
+    }
+    window.addEventListener('storage', sync)
+    document.addEventListener('visibilitychange', sync)
+    return () => {
+      window.removeEventListener('storage', sync)
+      document.removeEventListener('visibilitychange', sync)
+    }
+  }, [])
+
   // ---------- OAuth callback ----------
   useEffect(() => {
     if (location.pathname === '/callback') {
