@@ -64,7 +64,16 @@ export default function App() {
   const subbed = useRef(false)
   const histTimer = useRef(null)
 
-  const [token, setToken] = useState(sessionStorage.getItem('bbfx_token') || '')
+  const [token, setToken] = useState(() => {
+    const t = localStorage.getItem('bbfx_token') || sessionStorage.getItem('bbfx_token') || ''
+    const exp = +localStorage.getItem('bbfx_exp') || 0
+    if (t && exp && Date.now() > exp - 5000) {
+      localStorage.removeItem('bbfx_token')
+      localStorage.removeItem('bbfx_exp')
+      return ''
+    }
+    return t
+  })
   const [accounts, setAccounts] = useState([])
   const [accId, setAccId] = useState('')
   const [status, setStatus] = useState('connecting')
@@ -84,6 +93,7 @@ export default function App() {
   const [hist, setHist] = useState(loadHist)
   const [notice, setNotice] = useState('')
   const [result, setResult] = useState(null)
+  const [acctKey, setAcctKey] = useState(0)
   const [tpOpen, setTpOpen] = useState(false)
 
   symRef.current = symbol
@@ -444,28 +454,84 @@ export default function App() {
         setAccounts(list)
         setAccId((list.find((a) => a.demo) || list[0]).id)
       })
-      .catch((e) => { note('⚠ Accounts: ' + e.message); logout() })
+      .catch((e) => {
+        note('⚠ Accounts: ' + e.message)
+        if (/expired|unauthor|invalid_token|401/i.test(e.message)) autoLogin()
+        else setTimeout(() => setAcctKey((k) => k + 1), 4000)
+      })
+  }, [token, acctKey])
+
+  // ---------- Authenticated trading socket (auto-reconnect + keep-alive) ----------
+  const autoLogin = () => {
+    const last = +sessionStorage.getItem('bbfx_relogin') || 0
+    if (Date.now() - last < 120000) { note('Session expired. Tap Log out, then log in again.'); return }
+    sessionStorage.setItem('bbfx_relogin', String(Date.now()))
+    login()
+  }
+
+  useEffect(() => {
+    if (!token) return
+    const t = setInterval(() => {
+      const exp = +localStorage.getItem('bbfx_exp') || 0
+      if (exp && Date.now() > exp - 20000) autoLogin()
+    }, 15000)
+    return () => clearInterval(t)
   }, [token])
 
-  // ---------- Authenticated trading socket (OTP URL) ----------
   useEffect(() => {
     if (!token || !accId) return
     let dead = false
     let s
-    fetch(`/api/otp/${accId}`, { method: 'POST', headers })
-      .then((r) => r.json())
-      .then((j) => {
-        if (dead) return
-        const url = j.data?.url
-        if (!url) throw new Error(JSON.stringify(j.errors || j).slice(0, 120))
-        s = new WebSocket(url)
-        trd.current = s
-        s.onopen = () => { setTradeOn(true); s.send(JSON.stringify({ balance: 1, subscribe: 1 })) }
-        s.onclose = () => setTradeOn(false)
-        s.onmessage = onTrade
-      })
-      .catch((e) => note('⚠ OTP: ' + e.message))
-    return () => { dead = true; s?.close(); setTradeOn(false) }
+    let retry
+    let ping
+    const connect = () => {
+      if (dead) return
+      fetch('/api/otp/' + accId, { method: 'POST', headers })
+        .then((r) => r.json())
+        .then((j) => {
+          if (dead) return
+          const url = j.data?.url
+          if (!url) {
+            const txt = JSON.stringify(j.errors || j)
+            if (/expired|unauthor|invalid_token|401/i.test(txt)) return autoLogin()
+            throw new Error(txt.slice(0, 120))
+          }
+          s = new WebSocket(url)
+          trd.current = s
+          s.onopen = () => {
+            setTradeOn(true)
+            s.send(JSON.stringify({ balance: 1, subscribe: 1 }))
+            clearInterval(ping)
+            ping = setInterval(() => { if (s.readyState === 1) s.send(JSON.stringify({ ping: 1 })) }, 25000)
+          }
+          s.onclose = () => {
+            clearInterval(ping)
+            setTradeOn(false)
+            if (!dead) retry = setTimeout(connect, 1500)
+          }
+          s.onmessage = onTrade
+        })
+        .catch((e) => {
+          note('Reconnecting… ' + e.message)
+          if (!dead) retry = setTimeout(connect, 4000)
+        })
+    }
+    connect()
+    const vis = () => {
+      if (document.visibilityState === 'visible' && (!s || s.readyState > 1)) {
+        clearTimeout(retry)
+        connect()
+      }
+    }
+    document.addEventListener('visibilitychange', vis)
+    return () => {
+      dead = true
+      clearTimeout(retry)
+      clearInterval(ping)
+      document.removeEventListener('visibilitychange', vis)
+      if (s) s.close()
+      setTradeOn(false)
+    }
   }, [token, accId])
 
   // ---------- Keep live proposals ready so a tap buys immediately ----------
@@ -495,6 +561,7 @@ export default function App() {
 
   function onTrade(e) {
     const m = JSON.parse(e.data)
+    if (m.echo_req && m.echo_req.ping) return
     bus.emit(m)
     if (m.msg_type !== 'proposal_open_contract' && ((m.req_id || 0) >= 500 || (m.echo_req && (m.echo_req.req_id || 0) >= 500))) return
     if (m.error) {
@@ -592,6 +659,8 @@ export default function App() {
 
   function logout() {
     sessionStorage.removeItem('bbfx_token')
+    localStorage.removeItem('bbfx_token')
+    localStorage.removeItem('bbfx_exp')
     setToken(''); setAccounts([]); setAccId(''); setBal('')
   }
 

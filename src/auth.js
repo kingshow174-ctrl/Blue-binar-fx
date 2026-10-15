@@ -42,7 +42,8 @@ export async function handleCallback() {
   if (!j.access_token) throw new Error(j.error_description || j.error || 'Token exchange failed')
   localStorage.removeItem('pkce_code_verifier')
   localStorage.removeItem('oauth_state')
-  sessionStorage.setItem('bbfx_token', j.access_token)
+  localStorage.setItem('bbfx_token', j.access_token)
+  localStorage.setItem('bbfx_exp', String(Date.now() + (j.expires_in || 3600) * 1000))
   history.replaceState({}, '', '/')
   return j.access_token
 }
