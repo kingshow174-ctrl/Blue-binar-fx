@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { login, handleCallback } from './auth.js'
 import Multi from './Multi.jsx'
+import Ai from './Ai.jsx'
 import { bus } from './bus.js'
 
 const APP_ID = import.meta.env.VITE_DERIV_CLIENT_ID
@@ -93,6 +94,11 @@ export default function App() {
   const [hist, setHist] = useState(loadHist)
   const [notice, setNotice] = useState('')
   const [result, setResult] = useState(null)
+  const tabsRef = useRef(null)
+  useEffect(() => {
+    const el = tabsRef.current && tabsRef.current.querySelector('button.on')
+    if (el && el.scrollIntoView) el.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' })
+  }, [tab])
   const [acctKey, setAcctKey] = useState(0)
   const [tpOpen, setTpOpen] = useState(false)
 
@@ -736,7 +742,7 @@ export default function App() {
           )}
         </section>
 
-        <div className="tabs">
+        <div className="tabs toptabs" ref={tabsRef}>
           <button className={tab === 'trader' ? 'on' : ''} onClick={() => setTab('trader')}>Trader</button>
           <button className={tab === 'history' ? 'on' : ''} onClick={() => setTab('history')}>
             History{hist.length ? ` (${hist.length})` : ''}
@@ -745,6 +751,7 @@ export default function App() {
             Alerts{monOn ? ' 🔔' : ''}
           </button>
           <button className={tab === 'multi' ? 'on' : ''} onClick={() => setTab('multi')}>Multipurpose</button>
+          <button className={'aib' + (tab === 'ai' ? ' on' : '')} onClick={() => setTab('ai')}>🤖 AI Strategies</button>
         </div>
       </div>
 
@@ -929,6 +936,18 @@ export default function App() {
           )}
         </>
       )}
+
+      <div className="ai aiwrap" style={{ display: tab === 'ai' ? 'grid' : 'none' }}>
+        <Ai
+          active={tab === 'ai'}
+          tradeOn={tradeOn}
+          send={trdSend}
+          cur={cur}
+          demo={acct ? acct.demo : true}
+          addHist={(e) => setHist((h) => [e, ...h].slice(0, 100))}
+          updHist={(id, p) => setHist((h) => h.map((x) => (String(x.id) === String(id) ? { ...x, ...p } : x)))}
+        />
+      </div>
 
       <div className="multiwrap" style={{ display: tab === 'multi' ? 'grid' : 'none' }}>
         <Multi
