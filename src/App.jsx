@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { login, handleCallback } from './auth.js'
+import Multi from './Multi.jsx'
+import { bus } from './bus.js'
 
 const APP_ID = import.meta.env.VITE_DERIV_CLIENT_ID
 const PUBLIC_WS = 'wss://api.derivws.com/trading/v1/options/ws/public'
@@ -493,6 +495,8 @@ export default function App() {
 
   function onTrade(e) {
     const m = JSON.parse(e.data)
+    bus.emit(m)
+    if (m.msg_type !== 'proposal_open_contract' && ((m.req_id || 0) >= 500 || (m.echo_req && (m.echo_req.req_id || 0) >= 500))) return
     if (m.error) {
       const meta = tradeMeta.current
       if (m.echo_req?.buy && meta && !retried.current) {
@@ -657,6 +661,7 @@ export default function App() {
           <button className={tab === 'alerts' ? 'on' : ''} onClick={() => setTab('alerts')}>
             Alerts{monOn ? ' 🔔' : ''}
           </button>
+          <button className={tab === 'multi' ? 'on' : ''} onClick={() => setTab('multi')}>Multipurpose</button>
         </div>
       </div>
 
@@ -841,6 +846,17 @@ export default function App() {
           )}
         </>
       )}
+
+      <div className="multiwrap" style={{ display: tab === 'multi' ? 'grid' : 'none' }}>
+        <Multi
+          tradeOn={tradeOn}
+          send={trdSend}
+          cur={cur}
+          demo={acct ? acct.demo : true}
+          addHist={(e) => setHist((h) => [e, ...h].slice(0, 100))}
+          updHist={(id, p) => setHist((h) => h.map((x) => (String(x.id) === String(id) ? { ...x, ...p } : x)))}
+        />
+      </div>
 
       {tab === 'history' && (
         <section className="card">

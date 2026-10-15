@@ -123,3 +123,12 @@ button:disabled{opacity:.5}
 
 .pill{font-style:normal;font-size:10px;color:#fff;height:14px;line-height:14px;white-space:nowrap}
 .circ.tsel{outline:3px solid #fff;outline-offset:3px}
+
+.multiwrap{gap:12px}
+.topbar .tabs button{font-size:12.5px;padding:8px 2px}
+.badge{font-size:11px;padding:4px 8px;border-radius:8px;background:#081226;color:var(--mut)}
+.badge.on{background:var(--g);color:#032;font-weight:800}
+.mrow{display:grid;grid-template-columns:1fr 40px 60px;gap:6px;align-items:center;padding:4px 0;border-bottom:1px solid var(--line)}
+.mrow b{text-align:center;font-size:18px}
+.met{text-align:center;font-size:12px;color:var(--mut)}
+.met.on{background:var(--g);color:#032;font-weight:800;border-radius:6px;padding:4px 0}
