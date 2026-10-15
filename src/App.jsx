@@ -702,7 +702,7 @@ export default function App() {
     <div className={'app' + (tab === 'alerts' ? ' al' : '') + (tab === 'alerts' && tpOpen ? ' open' : '')}>
       <div className="topbar">
         <header>
-          <h1>Blue Binary <span>FX</span></h1>
+          <h1>Blue Matrix <span>Trader</span></h1>
           <div className="acct">
             <i className={'dot ' + (token ? (tradeOn ? 'online' : 'connecting') : status)} />
             {token ? (bal ? `${bal} ${cur}` : '...') : status}
