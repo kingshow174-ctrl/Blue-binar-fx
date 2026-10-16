@@ -950,6 +950,7 @@ export default function App() {
 
       <div className="multiwrap" style={{ display: tab === 'multi' ? 'grid' : 'none' }}>
         <Multi
+          active={tab === 'multi'}
           tradeOn={tradeOn}
           send={trdSend}
           cur={cur}

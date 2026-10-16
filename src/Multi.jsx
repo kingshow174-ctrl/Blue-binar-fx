@@ -33,7 +33,7 @@ const DEF = {
   stakes: '1, 2, 4, 8', end: 'restart', after: 'win', maxOpen: 3, sl: 10, tp: 10, syms: ['R_100'],
 }
 
-export default function Multi({ tradeOn, send, cur, demo, addHist, updHist }) {
+export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHist }) {
   const [cfg, setCfg] = useState(() => {
     try { return { ...DEF, ...JSON.parse(localStorage.bbfx_multi || '{}') } } catch { return DEF }
   })
@@ -43,6 +43,9 @@ export default function Multi({ tradeOn, send, cur, demo, addHist, updHist }) {
   const [msg, setMsg] = useState('')
   const [waitTxt, setWaitTxt] = useState('')
   const [watch, setWatch] = useState('')
+  const [showC, setShowC] = useState(() => localStorage.bbfx_mcirc !== '0')
+  const [circNIn, setCircNIn] = useState(1000)
+  const [cd, setCd] = useState([])
   const [, force] = useState(0)
 
   const cfgRef = useRef(cfg)
@@ -462,6 +465,63 @@ export default function Multi({ tradeOn, send, cur, demo, addHist, updHist }) {
     setC({ syms: cfg.syms.includes(v) ? cfg.syms.filter((x) => x !== v) : [...cfg.syms, v] })
 
   const wsym = cfg.syms.includes(watch) ? watch : cfg.syms[0]
+
+  // ----- circles: own socket for the market shown in the LDP -----
+  const circN = Math.max(100, Math.min(5000, +circNIn || 1000))
+  useEffect(() => {
+    if (!showC || !active || !wsym) return
+    let dead = false
+    let sock
+    let retry
+    let subTimer
+    const run = () => {
+      sock = new WebSocket(PUBLIC_WS)
+      let subd = false
+      const sub = () => {
+        if (subd || sock.readyState !== 1) return
+        subd = true
+        sock.send(JSON.stringify({ ticks: wsym, subscribe: 1 }))
+      }
+      sock.onopen = () => {
+        setCd([])
+        sock.send(JSON.stringify({ ticks_history: wsym, count: circN, end: 'latest', style: 'ticks' }))
+        subTimer = setTimeout(sub, 4000)
+      }
+      sock.onclose = () => { if (!dead) retry = setTimeout(run, 2000) }
+      sock.onmessage = (e) => {
+        const m = JSON.parse(e.data)
+        if (m.msg_type === 'history') {
+          const h = m.history || {}
+          const pp = m.pip_size ?? h.pip_size ?? 2
+          setCd((h.prices || []).map((p) => +Number(p).toFixed(pp).slice(-1)).slice(-circN))
+          sub()
+        } else if (m.msg_type === 'tick') {
+          const t = m.tick
+          const d = +t.quote.toFixed(t.pip_size).slice(-1)
+          setCd((a) => [...a.slice(-(circN - 1)), d])
+        } else if (m.error && m.echo_req && m.echo_req.ticks_history) {
+          sub()
+        }
+      }
+    }
+    const start = setTimeout(run, 500)
+    return () => {
+      dead = true
+      clearTimeout(start)
+      clearTimeout(retry)
+      clearTimeout(subTimer)
+      if (sock) sock.close()
+    }
+  }, [showC, active, wsym, circN])
+
+  const cn = cd.length || 1
+  const ccount = Array(10).fill(0)
+  cd.forEach((d) => { ccount[d]++ })
+  const cmax = Math.max(...ccount)
+  const cmin = Math.min(...ccount)
+  const csecond = Math.max(-1, ...ccount.filter((c) => c < cmax))
+  const clast = cd[cd.length - 1]
+  const ccls = (c) => (cd.length === 0 ? '' : c === cmax ? 'g' : c === cmin ? 'r' : c === csecond ? 'b' : '')
   const arr = (wsym && digs.current[wsym]) || []
   const bnum = +cfg.barrier
   const k = Math.max(1, +cfg.condK || 1)
@@ -487,6 +547,52 @@ export default function Multi({ tradeOn, send, cur, demo, addHist, updHist }) {
 
   return (
     <>
+      <section className="card">
+        <div className="pcthead">
+          <b>CIRCLES · {SYMN[wsym] || ''}</b>
+          <button
+            className="smallbtn"
+            onClick={() => {
+              const v = !showC
+              setShowC(v)
+              localStorage.bbfx_mcirc = v ? '1' : '0'
+            }}
+          >
+            {showC ? 'Hide' : 'Show'}
+          </button>
+        </div>
+        {showC && (
+          <>
+            <div className="row">
+              <label>Ticks to analyse
+                <input type="number" min="100" max="5000" value={circNIn} onChange={(e) => setCircNIn(e.target.value)} />
+              </label>
+            </div>
+            <div className="circles">
+              {ccount.map((c, d) => {
+                const parts = []
+                if (['lt', 'gt', 'eq'].includes(cfg.cond) && d === +cfg.condN) parts.push('SIGNAL')
+                if (hasB(cfg.type) && d === +cfg.barrier) parts.push('TRADE')
+                const isLast = clast === d
+                return (
+                  <div className="cwrap" key={d + '-' + (isLast ? cd.length : 'x')}>
+                    <i className="pill">{parts.join(' ')}</i>
+                    <div className={'circ ' + ccls(c) + (hasB(cfg.type) && d === +cfg.barrier ? ' tsel' : '') + (isLast ? ' flash' : '')}>
+                      <b>{d}</b>
+                      <small>{cd.length ? ((c / cn) * 100).toFixed(1) + '%' : '…'}</small>
+                    </div>
+                    <i className="tri">{isLast ? '▲' : ''}</i>
+                  </div>
+                )
+              })}
+            </div>
+            <div className="muted">
+              {cd.length < circN ? 'Loading ' + cd.length + '/' + circN + ' ticks…' : 'Last ' + circN + ' ticks'} · green most · blue 2nd · red least · follows the market chosen in LDP below
+            </div>
+          </>
+        )}
+      </section>
+
       <section className="card">
         <div className="pcthead">
           <b>LDP</b>

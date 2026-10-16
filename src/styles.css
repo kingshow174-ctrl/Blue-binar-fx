@@ -222,3 +222,7 @@ button:disabled{opacity:.5}
 .sig{color:#6fb4ff}
 .topbar .toptabs button.aib{border-color:#0d4a8f;color:#7cc4ff}
 .topbar .toptabs button.aib.on{background:#0b4a94;border-color:#7cc4ff;color:#fff;box-shadow:0 0 12px rgba(58,160,255,.7)}
+
+.smallbtn{padding:6px 16px;font-size:12px}
+@keyframes mflash{0%{transform:scale(1.2);box-shadow:0 0 16px #fff}100%{transform:scale(1);box-shadow:none}}
+.circ.flash{animation:mflash .45s ease-out}
