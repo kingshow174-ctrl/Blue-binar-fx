@@ -30,7 +30,7 @@ const parseStakes = (s) =>
   String(s).split(/[\s,;]+/).map(Number).filter((x) => isFinite(x) && x >= 0.35)
 const DEF = {
   condK: 1, cond: 'lt', condN: 2, type: 'DIGITOVER', barrier: 1, dur: 1,
-  stakes: '1, 2, 4, 8', end: 'restart', after: 'win', sl: 10, tp: 10, syms: ['R_100'],
+  stakes: '1, 2, 4, 8', end: 'restart', after: 'win', maxOpen: 3, sl: 10, tp: 10, syms: ['R_100'],
 }
 
 export default function Multi({ tradeOn, send, cur, demo, addHist, updHist }) {
@@ -41,22 +41,25 @@ export default function Multi({ tradeOn, send, cur, demo, addHist, updHist }) {
   const [stats, setStats] = useState({ net: 0, trades: 0, wins: 0, losses: 0, idx: 0 })
   const [log, setLog] = useState([])
   const [msg, setMsg] = useState('')
-  const [watch, setWatch] = useState('')
   const [waitTxt, setWaitTxt] = useState('')
+  const [watch, setWatch] = useState('')
   const [, force] = useState(0)
 
   const cfgRef = useRef(cfg)
   const runRef = useRef(false)
-  const busy = useRef(false)
   const idxRef = useRef(0)
   const netRef = useRef(0)
   const errs = useRef(0)
   const digs = useRef({})
   const pip = useRef({})
   const reqs = useRef({})
-  const openC = useRef(null)
+  const pend = useRef(new Set())
+  const openMap = useRef({})
+  const armReq = useRef({})
+  const armLatest = useRef({})
+  const armedP = useRef({})
+  const armErr = useRef({})
   const seq = useRef(500)
-  const dog = useRef(null)
   const gate = useRef(null)
   const sendRef = useRef(send)
   const tradeOnRef = useRef(tradeOn)
@@ -70,47 +73,95 @@ export default function Multi({ tradeOn, send, cur, demo, addHist, updHist }) {
 
   useEffect(() => { localStorage.bbfx_multi = JSON.stringify(cfg) }, [cfg])
   const setC = (p) => setCfg((c) => ({ ...c, ...p }))
-  const addLog = (t) => setLog((l) => [t, ...l].slice(0, 12))
-  const nid = () => ++seq.current
+  const addLog = (t) => setLog((l) => [t, ...l].slice(0, 14))
   const stakesList = () => {
     const l = parseStakes(cfgRef.current.stakes)
     return l.length ? l : [1]
   }
+  const curStake = () => {
+    const l = stakesList()
+    return l[Math.min(idxRef.current, l.length - 1)]
+  }
+  const slots = () => Object.keys(openMap.current).length + pend.current.size
+  const exposure = () => {
+    let e = 0
+    Object.values(openMap.current).forEach((o) => { e += o.meta.stake })
+    pend.current.forEach((rid) => {
+      const r = reqs.current[rid]
+      if (r && r.meta) e += r.meta.stake
+    })
+    return e
+  }
 
   const stopBot = (why) => {
+    runRef.current = false
     gate.current = null
     setWaitTxt('')
-    runRef.current = false
     setRunning(false)
-    clearTimeout(dog.current)
-    busy.current = false
-    openC.current = null
+    Object.values(armedP.current).forEach((a) => { if (a.subId) sendRef.current({ forget: a.subId }) })
+    armedP.current = {}
+    armLatest.current = {}
+    pend.current.clear()
     setMsg(why ? '■ ' + why : 'Stopped')
     if (why) addLog('■ ' + why)
   }
 
-  const place = (sym) => {
+  // keep a ready-to-buy price for the current stake on every selected market
+  const armSym = (sym) => {
+    if (!runRef.current || !tradeOnRef.current) return
     const c = cfgRef.current
-    const list = stakesList()
-    const stake = list[Math.min(idxRef.current, list.length - 1)]
+    const stake = curStake()
     const barrier = hasB(c.type) ? +c.barrier : null
-    busy.current = true
-    const rid = nid()
-    reqs.current[rid] = { kind: 'proposal', meta: { sym, stake, type: c.type, barrier, dur: +c.dur || 1 } }
+    const dur = +c.dur || 1
+    const key = [c.type, barrier, dur, stake, curRef.current].join('|')
+    const rid = ++seq.current
+    armReq.current[rid] = { sym, key }
+    armLatest.current[sym] = rid
     const p = {
       proposal: 1, subscribe: 1, req_id: rid, amount: stake, basis: 'stake',
-      contract_type: c.type, currency: curRef.current || 'USD', duration: +c.dur || 1,
+      contract_type: c.type, currency: curRef.current || 'USD', duration: dur,
       duration_unit: 't', underlying_symbol: sym,
     }
     if (barrier !== null) p.barrier = String(barrier)
     sendRef.current(p)
-    clearTimeout(dog.current)
-    dog.current = setTimeout(() => {
-      if (busy.current && !openC.current) {
-        busy.current = false
-        addLog('No reply to the trade request, skipped')
-      }
-    }, 12000)
+  }
+  const armAll = () => cfgRef.current.syms.forEach(armSym)
+
+  const sendBuy = (meta, pid, ask, subId, armed, retried) => {
+    const rid = ++seq.current
+    reqs.current[rid] = { kind: 'buy', meta, subId, armed, retried, t: Date.now() }
+    pend.current.add(rid)
+    sendRef.current({ buy: pid, price: Number(ask) || meta.stake, req_id: rid })
+  }
+  const slow = (meta, retried) => {
+    const rid = ++seq.current
+    reqs.current[rid] = { kind: 'proposal', meta, retried, t: Date.now() }
+    pend.current.add(rid)
+    const p = {
+      proposal: 1, subscribe: 1, req_id: rid, amount: meta.stake, basis: 'stake',
+      contract_type: meta.type, currency: curRef.current || 'USD', duration: meta.dur,
+      duration_unit: 't', underlying_symbol: meta.sym,
+    }
+    if (meta.barrier !== null) p.barrier = String(meta.barrier)
+    sendRef.current(p)
+  }
+
+  const fire = (sym) => {
+    const c = cfgRef.current
+    const maxOpen = Math.max(1, Math.min(5, +c.maxOpen || 1))
+    if (slots() >= maxOpen) return
+    if (netRef.current - exposure() <= -Math.abs(+c.sl)) return
+    const stake = curStake()
+    const meta = { sym, stake, type: c.type, barrier: hasB(c.type) ? +c.barrier : null, dur: +c.dur || 1 }
+    const key = [meta.type, meta.barrier, meta.dur, stake, curRef.current].join('|')
+    const a = armedP.current[sym]
+    if (a && a.key === key && a.id) {
+      delete armedP.current[sym]
+      sendBuy(meta, a.id, a.ask, a.subId, true, false)
+      armSym(sym)
+    } else {
+      slow(meta, false)
+    }
   }
 
   const condMet = (sym) => {
@@ -121,7 +172,7 @@ export default function Multi({ tradeOn, send, cur, demo, addHist, updHist }) {
   }
 
   const evalTick = (sym) => {
-    if (!runRef.current || busy.current || !tradeOnRef.current) return
+    if (!runRef.current || !tradeOnRef.current) return
     const g = gate.current
     if (g) {
       if (sym !== g.sym) return
@@ -139,22 +190,20 @@ export default function Multi({ tradeOn, send, cur, demo, addHist, updHist }) {
       gate.current = null
       setWaitTxt('')
     }
-    if (condMet(sym)) place(sym)
+    if (condMet(sym)) fire(sym)
   }
 
-  const finish = (c) => {
-    const o = openC.current
-    if (!o) return
+  const finish = (c, o) => {
+    delete openMap.current[String(c.contract_id)]
     const profit = Number(c.profit)
     if (Number.isNaN(profit)) return
-    openC.current = null
-    clearTimeout(dog.current)
     const ex = typeof c.exit_tick_display_value === 'string' ? +c.exit_tick_display_value.slice(-1) : NaN
     helpers.current.updHist(c.contract_id, {
       status: profit >= 0 ? 'win' : 'loss', profit, exit: Number.isNaN(ex) ? undefined : ex,
     })
     netRef.current += profit
     const list = stakesList()
+    const oldStake = curStake()
     let idx = idxRef.current
     let endStop = false
     if (profit >= 0) idx = 0
@@ -166,17 +215,20 @@ export default function Multi({ tradeOn, send, cur, demo, addHist, updHist }) {
       }
     }
     idxRef.current = idx
-    if (profit < 0 && cfgRef.current.after !== 'now') {
-      const mode = cfgRef.current.after === 'fresh' ? 'fresh' : 'win'
-      gate.current = { mode, sym: o.meta.sym, type: o.meta.type, barrier: o.meta.barrier, ok: false, sawFalse: false }
-      setWaitTxt(
-        mode === 'win'
-          ? 'Waiting after the loss: needs a winning digit (' + TYPEN[o.meta.type] + (o.meta.barrier !== null ? ' ' + o.meta.barrier : '') + ') on ' + SYMN[o.meta.sym] + ', then the next signal'
-          : 'Waiting after the loss: the signal must clear and appear again on ' + SYMN[o.meta.sym]
-      )
-    } else {
-      gate.current = null
-      setWaitTxt('')
+    const live = runRef.current
+    if (live) {
+      if (profit < 0 && cfgRef.current.after !== 'now') {
+        const mode = cfgRef.current.after === 'fresh' ? 'fresh' : 'win'
+        gate.current = { mode, sym: o.meta.sym, type: o.meta.type, barrier: o.meta.barrier, ok: false, sawFalse: false }
+        setWaitTxt(
+          mode === 'win'
+            ? 'Waiting after the loss: needs a winning digit (' + TYPEN[o.meta.type] + (o.meta.barrier !== null ? ' ' + o.meta.barrier : '') + ') on ' + SYMN[o.meta.sym] + ', then the next signal'
+            : 'Waiting after the loss: the signal must clear and appear again on ' + SYMN[o.meta.sym]
+        )
+      } else {
+        gate.current = null
+        setWaitTxt('')
+      }
     }
     setStats((s) => ({
       net: netRef.current, trades: s.trades + 1, wins: s.wins + (profit >= 0 ? 1 : 0),
@@ -187,7 +239,8 @@ export default function Multi({ tradeOn, send, cur, demo, addHist, updHist }) {
       (o.meta.barrier !== null ? ' ' + o.meta.barrier : '') + ' · stake ' + o.meta.stake +
       ' · ' + (profit >= 0 ? '+' : '') + profit.toFixed(2)
     )
-    busy.current = false
+    if (!live) return
+    if (curStake() !== oldStake) armAll()
     const c2 = cfgRef.current
     if (netRef.current <= -Math.abs(+c2.sl)) return stopBot('Stop loss reached')
     if (+c2.tp > 0 && netRef.current >= +c2.tp) return stopBot('Take profit reached')
@@ -199,52 +252,103 @@ export default function Multi({ tradeOn, send, cur, demo, addHist, updHist }) {
     const h = (m) => {
       if (m.msg_type === 'proposal_open_contract') {
         const c = m.proposal_open_contract
-        const o = openC.current
-        if (o && c && String(c.contract_id) === o.id && c.is_sold) {
+        if (c && c.is_sold) {
+          const o = openMap.current[String(c.contract_id)]
           if (m.subscription) sendRef.current({ forget: m.subscription.id })
-          finish(c)
+          if (o) finish(c, o)
         }
         return
       }
       const rid = m.req_id || (m.echo_req && m.echo_req.req_id)
       if (!rid || rid < 500) return
+
+      const ar = armReq.current[rid]
+      if (ar) {
+        if (m.error) {
+          if (armErr.current[ar.sym] !== m.error.message) {
+            armErr.current[ar.sym] = m.error.message
+            addLog('⚠ ' + SYMN[ar.sym] + ': ' + m.error.message)
+          }
+          return
+        }
+        if (m.msg_type === 'proposal') {
+          if (!runRef.current || armLatest.current[ar.sym] !== rid) {
+            if (m.subscription) sendRef.current({ forget: m.subscription.id })
+            return
+          }
+          const old = armedP.current[ar.sym]
+          if (old && old.subId && m.subscription && old.subId !== m.subscription.id) {
+            sendRef.current({ forget: old.subId })
+          }
+          armErr.current[ar.sym] = ''
+          armedP.current[ar.sym] = {
+            id: m.proposal.id, ask: m.proposal.ask_price, key: ar.key, subId: m.subscription && m.subscription.id,
+          }
+        }
+        return
+      }
+
       const r = reqs.current[rid]
       if (!r) return
       if (m.error) {
-        if (r.kind === 'proposal' || r.kind === 'buy') {
-          busy.current = false
-          clearTimeout(dog.current)
-          addLog('⚠ ' + (m.error.code || '') + ' ' + m.error.message)
-          errs.current += 1
-          if (errs.current >= 3) stopBot('Stopped after repeated errors')
+        pend.current.delete(rid)
+        if (r.kind === 'buy' && r.armed && !r.retried) {
+          addLog('Fast price expired, retrying')
+          armSym(r.meta.sym)
+          slow(r.meta, true)
+          return
         }
+        addLog('⚠ ' + (m.error.code || '') + ' ' + m.error.message)
+        errs.current += 1
+        if (errs.current >= 3) stopBot('Stopped after repeated errors')
         return
       }
       if (m.msg_type === 'proposal' && r.kind === 'proposal') {
         if (r.done) return
         r.done = true
-        const brid = nid()
-        reqs.current[brid] = { kind: 'buy', meta: r.meta, subId: m.subscription && m.subscription.id }
-        sendRef.current({ buy: m.proposal.id, price: Number(m.proposal.ask_price) || r.meta.stake, req_id: brid })
+        pend.current.delete(rid)
+        sendBuy(r.meta, m.proposal.id, m.proposal.ask_price, m.subscription && m.subscription.id, false, r.retried)
       } else if (m.msg_type === 'buy' && r.kind === 'buy') {
+        pend.current.delete(rid)
         if (r.subId) sendRef.current({ forget: r.subId })
         errs.current = 0
         const id = m.buy.contract_id
-        openC.current = { id: String(id), meta: r.meta }
+        openMap.current[String(id)] = { meta: r.meta, t: Date.now() }
         helpers.current.addHist({
           id, t: Date.now(), symbol: r.meta.sym, type: r.meta.type, barrier: r.meta.barrier,
           stake: Number(m.buy.buy_price), status: 'open',
         })
-        sendRef.current({ proposal_open_contract: 1, contract_id: id, subscribe: 1, req_id: nid() })
-        clearTimeout(dog.current)
-        dog.current = setTimeout(() => {
-          if (openC.current) stopBot('No result received for the last trade, stopped for safety')
-        }, 60000 + r.meta.dur * 3000)
+        sendRef.current({ proposal_open_contract: 1, contract_id: id, subscribe: 1, req_id: ++seq.current })
       }
     }
     bus.fns.add(h)
     return () => bus.fns.delete(h)
   }, [])
+
+  // watchdog + periodic price refresh while running
+  useEffect(() => {
+    if (!running) return
+    let n = 0
+    const t = setInterval(() => {
+      n += 1
+      const now = Date.now()
+      pend.current.forEach((rid) => {
+        const r = reqs.current[rid]
+        if (!r || now - r.t > 12000) {
+          pend.current.delete(rid)
+          addLog('No reply to a trade request, skipped')
+        }
+      })
+      Object.entries(openMap.current).forEach(([id, o]) => {
+        if (now - o.t > 65000) {
+          delete openMap.current[id]
+          stopBot('No result received for a trade, stopped for safety')
+        }
+      })
+      if (n % 25 === 0) armAll()
+    }, 1000)
+    return () => clearInterval(t)
+  }, [running])
 
   // tick monitor for the selected markets
   useEffect(() => {
@@ -274,10 +378,10 @@ export default function Multi({ tradeOn, send, cur, demo, addHist, updHist }) {
         if (m.msg_type === 'history') {
           const sym = m.echo_req && m.echo_req.ticks_history
           if (!sym) return
-          const h = m.history || {}
-          const pp = m.pip_size ?? h.pip_size ?? pip.current[sym] ?? 2
+          const hh = m.history || {}
+          const pp = m.pip_size ?? hh.pip_size ?? pip.current[sym] ?? 2
           pip.current[sym] = pp
-          digs.current[sym] = (h.prices || []).map((p) => +Number(p).toFixed(pp).slice(-1)).slice(-60)
+          digs.current[sym] = (hh.prices || []).map((p) => +Number(p).toFixed(pp).slice(-1)).slice(-60)
           sub(sym)
           return
         }
@@ -343,12 +447,15 @@ export default function Multi({ tradeOn, send, cur, demo, addHist, updHist }) {
     netRef.current = 0
     idxRef.current = 0
     errs.current = 0
-    busy.current = false
-    openC.current = null
+    pend.current.clear()
+    armedP.current = {}
+    armLatest.current = {}
+    armErr.current = {}
     setStats({ net: 0, trades: 0, wins: 0, losses: 0, idx: 0 })
     runRef.current = true
     setRunning(true)
     setMsg('Running')
+    armAll()
   }
 
   const togSym = (v) =>
@@ -375,6 +482,8 @@ export default function Multi({ tradeOn, send, cur, demo, addHist, updHist }) {
   const shown = list.length ? list : [1]
   const nextStake = shown[Math.min(stats.idx, shown.length - 1)]
   const needN = ['lt', 'gt', 'eq'].includes(cfg.cond)
+  const openNow = Object.keys(openMap.current).length + pend.current.size
+  const maxO = Math.max(1, Math.min(5, +cfg.maxOpen || 1))
 
   return (
     <>
@@ -408,6 +517,7 @@ export default function Multi({ tradeOn, send, cur, demo, addHist, updHist }) {
           <div><small>Win / Loss</small><b>{stats.wins} / {stats.losses}</b></div>
           <div><small>Next stake</small><b>{nextStake}</b></div>
         </div>
+        {running && <div className="muted">Open trades: {openNow} / {maxO}</div>}
       </section>
 
       <section className="card">
@@ -472,10 +582,17 @@ export default function Multi({ tradeOn, send, cur, demo, addHist, updHist }) {
             <option value="now">Trade on the very next signal</option>
           </select>
         </label>
-        <label>Take profit (0 = off)
-          <input type="number" min="0" step="0.5" disabled={running} value={cfg.tp} onChange={(e) => setC({ tp: e.target.value })} />
-        </label>
-        <div className="muted">Stakes go up after each loss, so losses can grow fast. Pick a stop loss you can afford.</div>
+        <div className="row">
+          <label>Trades open at once
+            <select disabled={running} value={cfg.maxOpen} onChange={(e) => setC({ maxOpen: +e.target.value })}>
+              {[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </label>
+          <label>Take profit (0 = off)
+            <input type="number" min="0" step="0.5" disabled={running} value={cfg.tp} onChange={(e) => setC({ tp: e.target.value })} />
+          </label>
+        </div>
+        <div className="muted">More trades at once means fewer skipped signals but more money at risk at the same time. The bot will not open a trade if losing everything already open would pass your stop loss.</div>
       </section>
 
       <section className="card">
