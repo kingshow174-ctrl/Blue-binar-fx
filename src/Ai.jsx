@@ -83,11 +83,12 @@ function MatrixRain({ active }) {
       raf = requestAnimationFrame(frame)
       if (t - last < 55) return
       last = t
-      ctx.fillStyle = 'rgba(2,10,6,0.13)'
+      ctx.fillStyle = 'rgba(2,10,24,0.13)'
       ctx.fillRect(0, 0, w, h)
       ctx.font = size + 'px monospace'
       for (let i = 0; i < cols; i++) {
-        ctx.fillStyle = Math.random() > 0.97 ? '#d6ffe6' : '#19ff7a'
+        const rr = Math.random()
+        ctx.fillStyle = rr > 0.97 ? '#ffffff' : rr > 0.93 ? '#19ff7a' : '#3aa0ff'
         ctx.fillText(chars[Math.floor(Math.random() * chars.length)], i * size, drops[i] * size)
         if (drops[i] * size > h && Math.random() > 0.975) drops[i] = 0
         drops[i] += 1
@@ -108,18 +109,18 @@ function Robot({ state }) {
       <circle className="ring" cx="60" cy="60" r="56" />
       <circle className="ring" cx="60" cy="60" r="48" style={{ opacity: 0.5 }} />
       <circle className="halo" cx="60" cy="60" r="56" />
-      <line x1="60" y1="34" x2="60" y2="23" stroke="#19ff7a" strokeWidth="2" />
-      <circle className="ant" cx="60" cy="20" r="3.5" fill="#19ff7a" />
-      <rect x="26" y="48" width="6" height="16" rx="2" fill="#0d6b3a" stroke="#19ff7a" />
-      <rect x="88" y="48" width="6" height="16" rx="2" fill="#0d6b3a" stroke="#19ff7a" />
-      <rect x="32" y="34" width="56" height="46" rx="10" fill="#03160c" stroke="#19ff7a" strokeWidth="2.5" />
-      <rect className="eye" x="42" y="47" width="10" height="10" rx="2" fill="#19ff7a" />
-      <rect className="eye" x="68" y="47" width="10" height="10" rx="2" fill="#19ff7a" />
+      <line x1="60" y1="34" x2="60" y2="23" stroke="#7cc4ff" strokeWidth="2" />
+      <circle className="ant" cx="60" cy="20" r="3.5" fill="#ffffff" />
+      <rect x="26" y="48" width="6" height="16" rx="2" fill="#0b4a94" stroke="#7cc4ff" />
+      <rect x="88" y="48" width="6" height="16" rx="2" fill="#0b4a94" stroke="#7cc4ff" />
+      <rect x="32" y="34" width="56" height="46" rx="10" fill="#031428" stroke="#3aa0ff" strokeWidth="2.5" />
+      <rect className="eye" x="42" y="47" width="10" height="10" rx="2" fill="#ffffff" />
+      <rect className="eye" x="68" y="47" width="10" height="10" rx="2" fill="#ffffff" />
       {[0, 1, 2, 3, 4].map((i) => (
         <rect key={i} className="bar" x={42 + i * 8} y="64" width="5" height="9" rx="1" fill="#19ff7a"
           style={{ animationDelay: i * 0.12 + 's' }} />
       ))}
-      <rect x="40" y="84" width="40" height="18" rx="6" fill="#03160c" stroke="#19ff7a" strokeWidth="2" />
+      <rect x="40" y="84" width="40" height="18" rx="6" fill="#031428" stroke="#3aa0ff" strokeWidth="2" />
       <circle className="chest" cx="60" cy="93" r="3.5" fill="#19ff7a" />
     </svg>
   )
