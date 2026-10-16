@@ -650,7 +650,6 @@ export default function App() {
   const trade = (type) => {
     if (!tradeOn) return note('Log in first')
     if (buying.current) return
-    if (acct && !acct.demo && !confirm('REAL account. Place this trade?')) return
     if (type === 'DIGITOVER' && barrier === 9) return note('Over needs digit 0-8')
     if (type === 'DIGITUNDER' && barrier === 0) return note('Under needs digit 1-9')
     const meta = {
