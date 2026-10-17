@@ -57,6 +57,24 @@ const diffInfo = (a, c) => {
   return { now, low, high, fast, delta }
 }
 
+// stake calculator: each recovery stake = losses x multiplier / divide-by
+const calcStakes = (c) => {
+  const base = Math.max(0.35, Number(c.cbase) || 0.35)
+  const mult = Number(c.cmult) || 11
+  const div = Math.max(1, Number(c.cdiv) || 1)
+  const steps = clamp(Math.round(Number(c.csteps) || 1), 1, 11)
+  const rnd = Number(c.cround) || 0.05
+  const up = (v) => Math.max(0.35, Math.round(Math.ceil(v / rnd - 1e-9) * rnd * 100) / 100)
+  const out = [Math.round(base * 100) / 100]
+  let cum = out[0]
+  for (let i = 0; i < steps; i++) {
+    const next = up((c.cmode === 'prev' ? out[out.length - 1] : cum) * mult / div)
+    out.push(next)
+    cum += next
+  }
+  return out
+}
+
 const BOTS = [
   {
     id: 'neo', name: 'NEO-SNIPER', need: 1,
@@ -101,7 +119,7 @@ const BOTS = [
 const BOTN = Object.fromEntries(BOTS.map((b) => [b.id, b]))
 const DEF = {
   bot: 'neo', syms: ['R_100'], stakes: '1, 2, 4, 8', end: 'restart', after: 'win', sl: 10, tp: 10,
-  ladder: DEF_LADDER, dmode: 'classic', ccount: 5, cwin: 20, dstake: 'list', dwin: 500, dspeed: 30, dfast: true, dfastN: 1, dlow: 2, dhigh: 0,
+  ladder: DEF_LADDER, dmode: 'classic', ccount: 5, cwin: 20, dstake: 'list', cbase: 0.35, cmult: 11, cdiv: 4, csteps: 4, cmode: 'cum', cround: 0.05, cauto: true, dwin: 500, dspeed: 30, dfast: true, dfastN: 1, dlow: 2, dhigh: 0,
 }
 
 function MatrixRain({ active }) {
@@ -182,6 +200,7 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
   const [watch, setWatch] = useState('')
   const [ladderOpen, setLadderOpen] = useState(true)
   const [fOpen, setFOpen] = useState(true)
+  const [calcOpen, setCalcOpen] = useState(true)
   const [mini, setMini] = useState({})
   const [, force] = useState(0)
 
@@ -220,6 +239,25 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
   helpers.current = { addHist, updHist }
 
   useEffect(() => { localStorage.bbfx_ai = JSON.stringify(cfg) }, [cfg])
+
+  // stake calculator: write the calculated stakes into the stake list and the ladder
+  const applyCalc = () => {
+    const c0 = cfgRef.current
+    const l = calcStakes(c0)
+    const div = Math.max(1, Math.round(Number(c0.cdiv) || 1))
+    setCfg((c) => ({
+      ...c,
+      stakes: l.map((v) => v.toFixed(2)).join(', '),
+      ladder: l.map((v, i) => ({ stake: v, runs: i === 0 ? 1 : div })),
+    }))
+  }
+  const calcKey = [cfg.cbase, cfg.cmult, cfg.cdiv, cfg.csteps, cfg.cmode, cfg.cround].join('|')
+  const calcFirst = useRef(true)
+  useEffect(() => {
+    if (calcFirst.current) { calcFirst.current = false; return }
+    if (!cfgRef.current.cauto || runRef.current) return
+    applyCalc()
+  }, [calcKey])
   const setC = (p) => setCfg((c) => ({ ...c, ...p }))
   const addLog = (t) => setLog((l) => ['[' + stamp() + '] ' + t, ...l].slice(0, 14))
   const ladderOn = () => botRef.current.id === 'diff' && cfgRef.current.dstake === 'ladder'
@@ -566,6 +604,16 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
   const rstate = running ? (busy.current ? 'trade' : gate.current ? 'wait' : 'scan') : 'idle'
   const shown = parseStakes(cfg.stakes).length ? parseStakes(cfg.stakes) : [1]
   const lad = ladderList()
+  const calcList = calcStakes(cfg)
+  const calcTotal = calcList.reduce((a, b) => a + b, 0)
+  const calcSl = Math.abs(+cfg.sl || 0)
+  let calcReach = 0
+  let calcCum = 0
+  for (let i = 0; i < calcList.length; i++) {
+    if (calcCum + calcList[i] < calcSl) calcReach = i
+    else break
+    calcCum += calcList[i]
+  }
   const nextStake = ladderUI
     ? lad[Math.min(stats.idx, lad.length - 1)].stake
     : shown[Math.min(stats.idx, shown.length - 1)]
@@ -641,6 +689,64 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
               ? 'Differs on the digit that just appeared unless the digit filter skips it.'
               : 'When the digit that just appeared has been seen ' + (cfg.ccount || 5) + '+ times in the last ' + (cfg.cwin || 20) + ' ticks, trade Differs on it.'}
           </div>
+        </section>
+      )}
+
+      {isDiff && (
+        <section className="card">
+          <div className="pcthead">
+            <b>STAKE CALCULATOR</b>
+            <button className="smallbtn" onClick={() => setCalcOpen((o) => !o)}>{calcOpen ? 'Minimise' : 'Expand'}</button>
+          </div>
+          {calcOpen && (
+            <>
+              <div className="muted">Builds your stake list and recovery blocks from your main stake. Each recovery stake = losses so far × multiply by ÷ divide by.</div>
+              <div className="row">
+                <label>Main stake
+                  <input type="number" min="0.35" step="0.05" disabled={running} value={cfg.cbase} onChange={(e) => setC({ cbase: e.target.value })} />
+                </label>
+                <label>Multiply by
+                  <input type="number" min="1" step="0.5" disabled={running} value={cfg.cmult} onChange={(e) => setC({ cmult: e.target.value })} />
+                </label>
+              </div>
+              <div className="row">
+                <label>Divide by (wins to recover)
+                  <input type="number" min="1" max="50" disabled={running} value={cfg.cdiv} onChange={(e) => setC({ cdiv: e.target.value })} />
+                </label>
+                <label>Recovery steps
+                  <input type="number" min="1" max="11" disabled={running} value={cfg.csteps} onChange={(e) => setC({ csteps: e.target.value })} />
+                </label>
+              </div>
+              <div className="row">
+                <label>Count losses
+                  <select disabled={running} value={cfg.cmode} onChange={(e) => setC({ cmode: e.target.value })}>
+                    <option value="cum">All losses so far</option>
+                    <option value="prev">Last stake only</option>
+                  </select>
+                </label>
+                <label>Round up to
+                  <select disabled={running} value={String(cfg.cround)} onChange={(e) => setC({ cround: +e.target.value })}>
+                    {[0.01, 0.05, 0.1, 0.5, 1].map((n) => <option key={n} value={String(n)}>{n}</option>)}
+                  </select>
+                </label>
+              </div>
+              <div className="calcrow">
+                {calcList.map((v, i) => <span key={i} className="cchip"><b>{LETTERS[i]}</b>{v.toFixed(2)}</span>)}
+              </div>
+              <div className="muted">
+                If every step loses you are down {calcTotal.toFixed(2)}. With your stop loss of {calcSl} the agent can reach block {LETTERS[calcReach]} (stake {calcList[calcReach].toFixed(2)}).
+              </div>
+              <div className="row">
+                <label>Auto-update stakes
+                  <select disabled={running} value={cfg.cauto ? 'on' : 'off'} onChange={(e) => setC({ cauto: e.target.value === 'on' })}>
+                    <option value="on">On: stakes follow these numbers</option>
+                    <option value="off">Off: only when I tap Apply</option>
+                  </select>
+                </label>
+                <button disabled={running} onClick={applyCalc}>Apply now</button>
+              </div>
+            </>
+          )}
         </section>
       )}
 

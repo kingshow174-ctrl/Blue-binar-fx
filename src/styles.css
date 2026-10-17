@@ -243,3 +243,8 @@ button:disabled{opacity:.5}
 .fchip.low,.fchip.high{opacity:.45;border-color:#7a2030}
 .fchip.fast{border-color:#d69e2e;opacity:.8}
 .fchip.last{outline:2px solid #fff;outline-offset:1px}
+
+/* ai-calc */
+.calcrow{display:flex;flex-wrap:wrap;gap:6px}
+.cchip{border:1px solid #0d4a8f;border-radius:8px;padding:4px 8px;font-size:12px;color:#cfe8ff}
+.cchip b{color:#7cc4ff;margin-right:4px}
