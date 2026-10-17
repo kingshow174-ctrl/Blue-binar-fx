@@ -25,6 +25,37 @@ const parseStakes = (s) =>
   String(s).split(/[\s,;]+/).map(Number).filter((x) => isFinite(x) && x >= 0.35)
 const label = (d) => (d ? TN[d.type] + (d.barrier != null ? ' ' + d.barrier : '') : '')
 const stamp = () => new Date().toLocaleTimeString([], { hour12: false })
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
+const LETTERS = 'ABCDEFGHIJKL'
+const DEF_LADDER = [
+  { stake: 0.35, runs: 1 }, { stake: 1, runs: 4 }, { stake: 3.5, runs: 4 },
+  { stake: 13, runs: 4 }, { stake: 47, runs: 4 },
+]
+
+const pctArr = (arr) => {
+  const c = Array(10).fill(0)
+  arr.forEach((d) => { c[d]++ })
+  return c.map((x) => (arr.length ? (x / arr.length) * 100 : 0))
+}
+// what the DIFF-RADAR sees: stable % per digit, lowest/highest ranks, fast movers
+const diffInfo = (a, c) => {
+  const W = clamp(Math.round(+c.dwin || 500), 100, 2000)
+  const SW = clamp(Math.round(+c.dspeed || 30), 5, 200)
+  const win = a.slice(-W)
+  const now = pctArr(win)
+  const prevArr = a.slice(Math.max(0, a.length - SW - W), Math.max(0, a.length - SW))
+  const prev = prevArr.length >= 50 ? pctArr(prevArr) : null
+  const delta = now.map((p, i) => (prev ? Math.abs(p - prev[i]) : 0))
+  const order = [...Array(10).keys()].sort((x, y) => now[x] - now[y])
+  const lowN = clamp(Math.round(+c.dlow || 0), 0, 5)
+  const highN = clamp(Math.round(+c.dhigh || 0), 0, 5)
+  const low = new Set(order.slice(0, lowN))
+  const high = new Set(highN ? order.slice(10 - highN) : [])
+  const thr = +c.dfastN || 1
+  const fast = new Set()
+  if (c.dfast) delta.forEach((d, i) => { if (d >= thr) fast.add(i) })
+  return { now, low, high, fast, delta }
+}
 
 const BOTS = [
   {
@@ -43,12 +74,14 @@ const BOTS = [
     },
   },
   {
-    id: 'diff', name: 'DIFF-RADAR', need: 20,
-    desc: 'Digit seen 4+ times in the last 20 and just appeared → Differs on it',
-    decide: (a) => {
-      const w = a.slice(-20)
-      const d = w[w.length - 1]
-      return w.filter((x) => x === d).length >= 4 ? { type: 'DIGITDIFF', barrier: d } : null
+    id: 'diff', name: 'DIFF-RADAR', need: 100,
+    desc: 'Differs on the digit that just appeared, skipping low-%, high-% and fast-moving digits. Recovery ladder A-E',
+    decide: (a, c) => {
+      if (a.length < 100) return null
+      const last = a[a.length - 1]
+      const info = diffInfo(a, c)
+      if (info.low.has(last) || info.high.has(last) || info.fast.has(last)) return null
+      return { type: 'DIGITDIFF', barrier: last }
     },
   },
   {
@@ -58,7 +91,10 @@ const BOTS = [
   },
 ]
 const BOTN = Object.fromEntries(BOTS.map((b) => [b.id, b]))
-const DEF = { bot: 'neo', syms: ['R_100'], stakes: '1, 2, 4, 8', end: 'restart', after: 'win', sl: 10, tp: 10 }
+const DEF = {
+  bot: 'neo', syms: ['R_100'], stakes: '1, 2, 4, 8', end: 'restart', after: 'win', sl: 10, tp: 10,
+  ladder: DEF_LADDER, dwin: 500, dspeed: 30, dfast: true, dfastN: 1, dlow: 2, dhigh: 0,
+}
 
 function MatrixRain({ active }) {
   const ref = useRef(null)
@@ -131,11 +167,14 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
     try { return { ...DEF, ...JSON.parse(localStorage.bbfx_ai || '{}') } } catch { return DEF }
   })
   const [running, setRunning] = useState(false)
-  const [stats, setStats] = useState({ net: 0, wins: 0, losses: 0, idx: 0 })
+  const [stats, setStats] = useState({ net: 0, wins: 0, losses: 0, idx: 0, w: 0 })
   const [log, setLog] = useState([])
   const [msg, setMsg] = useState('')
   const [waitTxt, setWaitTxt] = useState('')
   const [watch, setWatch] = useState('')
+  const [ladderOpen, setLadderOpen] = useState(true)
+  const [fOpen, setFOpen] = useState(true)
+  const [mini, setMini] = useState({})
   const [, force] = useState(0)
 
   const cfgRef = useRef(cfg)
@@ -143,6 +182,8 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
   const runRef = useRef(false)
   const busy = useRef(false)
   const idxRef = useRef(0)
+  const levelRef = useRef(0)
+  const winsRef = useRef(0)
   const netRef = useRef(0)
   const errs = useRef(0)
   const digs = useRef({})
@@ -157,6 +198,10 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
   const curRef = useRef(cur)
   const helpers = useRef({})
   const bot = BOTN[cfg.bot] || BOTS[0]
+  const isDiff = bot.id === 'diff'
+  const dW = clamp(Math.round(+cfg.dwin || 500), 100, 2000)
+  const dS = clamp(Math.round(+cfg.dspeed || 30), 5, 200)
+  const keep = isDiff ? dW + dS + 20 : 60
   cfgRef.current = cfg
   botRef.current = bot
   sendRef.current = send
@@ -167,9 +212,24 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
   useEffect(() => { localStorage.bbfx_ai = JSON.stringify(cfg) }, [cfg])
   const setC = (p) => setCfg((c) => ({ ...c, ...p }))
   const addLog = (t) => setLog((l) => ['[' + stamp() + '] ' + t, ...l].slice(0, 14))
+
   const stakesList = () => {
     const l = parseStakes(cfgRef.current.stakes)
     return l.length ? l : [1]
+  }
+  const ladderList = () => {
+    const l = (cfgRef.current.ladder || [])
+      .map((b) => ({ stake: Number(b.stake), runs: Math.max(1, Math.round(Number(b.runs) || 1)) }))
+      .filter((b) => isFinite(b.stake) && b.stake >= 0.35)
+    return l.length ? l : DEF_LADDER
+  }
+  const curStake = () => {
+    if (botRef.current.id === 'diff') {
+      const L = ladderList()
+      return L[Math.min(levelRef.current, L.length - 1)].stake
+    }
+    const l = stakesList()
+    return l[Math.min(idxRef.current, l.length - 1)]
   }
 
   const stopBot = (why) => {
@@ -185,8 +245,11 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
   }
 
   const place = (sym, dec) => {
-    const list = stakesList()
-    const stake = list[Math.min(idxRef.current, list.length - 1)]
+    const stake = curStake()
+    if (netRef.current - stake <= -Math.abs(+cfgRef.current.sl)) {
+      stopBot('Next stake ' + stake + ' could pass your stop loss, stopped')
+      return
+    }
     const meta = {
       sym, stake, type: dec.type, barrier: hasB(dec.type) ? dec.barrier : null, bot: botRef.current.name,
     }
@@ -200,7 +263,8 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
     }
     if (meta.barrier !== null) p.barrier = String(meta.barrier)
     sendRef.current(p)
-    addLog(meta.bot + ' FIRE ' + SYMN[sym] + ' ' + label(dec) + ' stake ' + stake)
+    const lv = botRef.current.id === 'diff' ? ' [' + LETTERS[Math.min(levelRef.current, 11)] + ']' : ''
+    addLog(meta.bot + ' FIRE ' + SYMN[sym] + ' ' + label(dec) + ' stake ' + stake + lv)
     clearTimeout(dog.current)
     dog.current = setTimeout(() => {
       if (busy.current && !openC.current) {
@@ -225,7 +289,7 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
     }
     const b = botRef.current
     if (a.length < b.need) return
-    const dec = b.decide(a)
+    const dec = b.decide(a, cfgRef.current)
     if (dec) place(sym, dec)
   }
 
@@ -241,18 +305,48 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
       status: profit >= 0 ? 'win' : 'loss', profit, exit: Number.isNaN(ex) ? undefined : ex,
     })
     netRef.current += profit
-    const list = stakesList()
-    let idx = idxRef.current
     let endStop = false
-    if (profit >= 0) idx = 0
-    else {
-      idx += 1
-      if (idx >= list.length) {
-        if (cfgRef.current.end === 'stop') endStop = true
-        idx = 0
+    let note = ''
+    let showIdx = 0
+    let showW = 0
+    if (botRef.current.id === 'diff') {
+      const L = ladderList()
+      let lvl = levelRef.current
+      let w = winsRef.current
+      if (profit >= 0) {
+        if (lvl > 0) {
+          w += 1
+          const need = L[Math.min(lvl, L.length - 1)].runs
+          if (w >= need) { note = ' · recovered, back to A'; lvl = 0; w = 0 }
+          else note = ' · ' + LETTERS[lvl] + ' ' + w + '/' + need
+        }
+      } else {
+        lvl += 1
+        w = 0
+        if (lvl >= L.length) {
+          if (cfgRef.current.end === 'stop') endStop = true
+          lvl = 0
+          note = ' · ladder finished'
+        } else note = ' · jump to ' + LETTERS[lvl]
       }
+      levelRef.current = lvl
+      winsRef.current = w
+      showIdx = lvl
+      showW = w
+    } else {
+      const list = stakesList()
+      let idx = idxRef.current
+      if (profit >= 0) idx = 0
+      else {
+        idx += 1
+        if (idx >= list.length) {
+          if (cfgRef.current.end === 'stop') endStop = true
+          idx = 0
+        }
+      }
+      idxRef.current = idx
+      showIdx = idx
     }
-    idxRef.current = idx
     if (profit < 0 && cfgRef.current.after !== 'now') {
       gate.current = { sym: o.meta.sym, type: o.meta.type, barrier: o.meta.barrier, ok: false }
       setWaitTxt('Cooling down after the loss: waiting for a winning digit on ' + SYMN[o.meta.sym] + ', then the next signal')
@@ -261,17 +355,19 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
       setWaitTxt('')
     }
     setStats((s) => ({
-      net: netRef.current, wins: s.wins + (profit >= 0 ? 1 : 0), losses: s.losses + (profit < 0 ? 1 : 0), idx,
+      net: netRef.current, wins: s.wins + (profit >= 0 ? 1 : 0), losses: s.losses + (profit < 0 ? 1 : 0),
+      idx: showIdx, w: showW,
     }))
     addLog(
       (profit >= 0 ? 'WIN  ' : 'LOSS ') + SYMN[o.meta.sym] + ' ' + TN[o.meta.type] +
-      (o.meta.barrier !== null ? ' ' + o.meta.barrier : '') + ' · ' + (profit >= 0 ? '+' : '') + profit.toFixed(2)
+      (o.meta.barrier !== null ? ' ' + o.meta.barrier : '') + ' · ' + (profit >= 0 ? '+' : '') + profit.toFixed(2) +
+      note + ' → next stake ' + curStake()
     )
     busy.current = false
     const c2 = cfgRef.current
     if (netRef.current <= -Math.abs(+c2.sl)) return stopBot('Stop loss reached')
     if (+c2.tp > 0 && netRef.current >= +c2.tp) return stopBot('Take profit reached')
-    if (endStop) return stopBot('Reached the end of the stake list')
+    if (endStop) return stopBot('Reached the end of the ladder')
   }
 
   // messages from the trading socket
@@ -344,7 +440,7 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
       sock.onopen = () => {
         digs.current = {}
         syms.forEach((sym) => {
-          sock.send(JSON.stringify({ ticks_history: sym, count: 60, end: 'latest', style: 'ticks' }))
+          sock.send(JSON.stringify({ ticks_history: sym, count: keep, end: 'latest', style: 'ticks' }))
           setTimeout(() => sub(sym), 3000)
         })
       }
@@ -357,7 +453,7 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
           const h = m.history || {}
           const pp = m.pip_size ?? h.pip_size ?? pip.current[sym] ?? 2
           pip.current[sym] = pp
-          digs.current[sym] = (h.prices || []).map((p) => +Number(p).toFixed(pp).slice(-1)).slice(-60)
+          digs.current[sym] = (h.prices || []).map((p) => +Number(p).toFixed(pp).slice(-1)).slice(-keep)
           sub(sym)
           return
         }
@@ -372,7 +468,7 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
           if (!sym) return
           pip.current[sym] = t.pip_size
           const d = +t.quote.toFixed(t.pip_size).slice(-1)
-          digs.current[sym] = [...(digs.current[sym] || []).slice(-59), d]
+          digs.current[sym] = [...(digs.current[sym] || []).slice(-(keep - 1)), d]
           evalTick(sym)
         }
       }
@@ -388,7 +484,7 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
       document.removeEventListener('visibilitychange', vis)
       if (sock) sock.close()
     }
-  }, [cfg.syms.join(',')])
+  }, [cfg.syms.join(','), keep])
 
   useEffect(() => {
     if (!tradeOn && runRef.current) stopBot('Trading connection lost, agent stopped')
@@ -413,17 +509,26 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
     const c = cfgRef.current
     if (!tradeOnRef.current) return setMsg('Log in first')
     if (!c.syms.length) return setMsg('Pick at least one market')
-    if (!parseStakes(c.stakes).length) return setMsg('Add at least one stake (minimum 0.35)')
+    if (botRef.current.id === 'diff') {
+      const lad = c.ladder || []
+      const bad = lad.findIndex((b) => !(Number(b.stake) >= 0.35))
+      if (bad >= 0) return setMsg('Block ' + LETTERS[bad] + ' needs a stake of at least 0.35')
+      if (lad.length < 2) return setMsg('Add at least one recovery block (B)')
+    } else if (!parseStakes(c.stakes).length) {
+      return setMsg('Add at least one stake (minimum 0.35)')
+    }
     if (!(+c.sl > 0)) return setMsg('Set a stop loss above 0')
     if (!demo && !confirm('REAL account. The agent will place trades automatically with real money. Start?')) return
     gate.current = null
     setWaitTxt('')
     netRef.current = 0
     idxRef.current = 0
+    levelRef.current = 0
+    winsRef.current = 0
     errs.current = 0
     busy.current = false
     openC.current = null
-    setStats({ net: 0, wins: 0, losses: 0, idx: 0 })
+    setStats({ net: 0, wins: 0, losses: 0, idx: 0, w: 0 })
     runRef.current = true
     setRunning(true)
     setMsg('Agent online')
@@ -433,12 +538,26 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
   const togSym = (v) =>
     setC({ syms: cfg.syms.includes(v) ? cfg.syms.filter((x) => x !== v) : [...cfg.syms, v] })
 
+  // ladder editing
+  const ladder = cfg.ladder || DEF_LADDER
+  const setBlock = (i, p) => setC({ ladder: ladder.map((b, j) => (j === i ? { ...b, ...p } : b)) })
+  const addBlock = () => {
+    const last = Number(ladder[ladder.length - 1].stake) || 1
+    setC({ ladder: [...ladder, { stake: Math.round(last * 3.5 * 100) / 100, runs: 4 }] })
+  }
+  const delBlock = (i) => { setC({ ladder: ladder.filter((_, j) => j !== i) }); setMini({}) }
+
   const wsym = cfg.syms.includes(watch) ? watch : cfg.syms[0]
   const arr = (wsym && digs.current[wsym]) || []
-  const decNow = arr.length >= bot.need ? bot.decide(arr) : null
+  const decNow = arr.length >= bot.need ? bot.decide(arr, cfg) : null
+  const info = isDiff && arr.length >= 100 ? diffInfo(arr, cfg) : null
+  const lastD = arr.length ? arr[arr.length - 1] : -1
   const rstate = running ? (busy.current ? 'trade' : gate.current ? 'wait' : 'scan') : 'idle'
   const shown = parseStakes(cfg.stakes).length ? parseStakes(cfg.stakes) : [1]
-  const nextStake = shown[Math.min(stats.idx, shown.length - 1)]
+  const lad = ladderList()
+  const nextStake = isDiff
+    ? lad[Math.min(stats.idx, lad.length - 1)].stake
+    : shown[Math.min(stats.idx, shown.length - 1)]
   const live = running
     ? (rstate === 'trade' ? 'EXECUTING' : rstate === 'wait' ? 'COOLDOWN' : 'SCANNING') + ' ' + (SYMN[wsym] || '-') +
       ' :: digit ' + (arr.length ? arr[arr.length - 1] : '…') + ' :: ' + (decNow ? 'SIGNAL ' + label(decNow) : 'no signal')
@@ -477,9 +596,123 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
         <div className="sum">
           <div><small>Net P/L</small><b className={stats.net >= 0 ? 'win' : 'loss'}>{stats.net >= 0 ? '+' : ''}{stats.net.toFixed(2)}</b></div>
           <div><small>Win / Loss</small><b>{stats.wins} / {stats.losses}</b></div>
-          <div><small>Next stake</small><b>{nextStake}</b></div>
+          <div><small>{isDiff ? 'Block ' + LETTERS[Math.min(stats.idx, 11)] + ' stake' : 'Next stake'}</small><b>{nextStake}</b></div>
         </div>
       </section>
+
+      {isDiff && (
+        <section className="card">
+          <div className="pcthead">
+            <b>DIGIT FILTER</b>
+            <button className="smallbtn" onClick={() => setFOpen((o) => !o)}>{fOpen ? 'Minimise' : 'Expand'}</button>
+          </div>
+          {fOpen && (
+            <>
+              <div className="muted">
+                Trades Differs on the digit that just appeared, unless it is one of the skipped digits below.
+                {info ? '' : ' Loading ticks…'}
+              </div>
+              <div className="fchips">
+                {Array.from({ length: 10 }, (_, d) => {
+                  const st = !info ? '' : info.low.has(d) ? 'low' : info.high.has(d) ? 'high' : info.fast.has(d) ? 'fast' : 'ok'
+                  return (
+                    <div key={d} className={'fchip ' + st + (d === lastD ? ' last' : '')}>
+                      <b>{d}</b>
+                      <small>{info ? info.now[d].toFixed(1) + '%' : '…'}</small>
+                      <small>{st === 'ok' ? 'ok' : st === 'low' ? 'skip low' : st === 'high' ? 'skip high' : st === 'fast' ? 'fast' : ''}</small>
+                    </div>
+                  )
+                })}
+              </div>
+              <div className="row">
+                <label>Percent window (ticks)
+                  <input type="number" min="100" max="2000" disabled={running} value={cfg.dwin} onChange={(e) => setC({ dwin: e.target.value })} />
+                </label>
+                <label>Skip lowest-% digits
+                  <select disabled={running} value={cfg.dlow} onChange={(e) => setC({ dlow: +e.target.value })}>
+                    {[0, 1, 2, 3, 4].map((n) => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                </label>
+              </div>
+              <div className="row">
+                <label>Skip highest-% digits
+                  <select disabled={running} value={cfg.dhigh} onChange={(e) => setC({ dhigh: +e.target.value })}>
+                    {[0, 1, 2, 3, 4].map((n) => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                </label>
+                <label>Skip fast-moving digits
+                  <select disabled={running} value={cfg.dfast ? 'on' : 'off'} onChange={(e) => setC({ dfast: e.target.value === 'on' })}>
+                    <option value="on">On</option>
+                    <option value="off">Off</option>
+                  </select>
+                </label>
+              </div>
+              <div className="row">
+                <label>Fast = moved by (points)
+                  <input type="number" min="0.1" step="0.1" disabled={running} value={cfg.dfastN} onChange={(e) => setC({ dfastN: e.target.value })} />
+                </label>
+                <label>…over the last (ticks)
+                  <input type="number" min="5" max="200" disabled={running} value={cfg.dspeed} onChange={(e) => setC({ dspeed: e.target.value })} />
+                </label>
+              </div>
+              <div className="muted">Percentages describe the past. Each new tick is independent, so a filter cannot predict the next digit.</div>
+            </>
+          )}
+        </section>
+      )}
+
+      {isDiff && (
+        <section className="card">
+          <div className="pcthead">
+            <b>RECOVERY LADDER</b>
+            <button className="smallbtn" onClick={() => setLadderOpen((o) => !o)}>{ladderOpen ? 'Minimise' : 'Expand'}</button>
+          </div>
+          {ladderOpen && (
+            <>
+              <div className="muted">
+                A is your main stake. When a trade loses, the bot jumps to the next block and runs its stake until it has won the number of times you set, then goes back to A. A loss inside a block jumps to the next block.
+              </div>
+              {ladder.map((b, i) => {
+                const col = !!mini[i]
+                const liveB = running && stats.idx === i
+                return (
+                  <div className={'lblock' + (liveB ? ' live' : '')} key={i}>
+                    <div className="lhead" onClick={() => setMini((m) => ({ ...m, [i]: !m[i] }))}>
+                      <b>{LETTERS[i]}</b>
+                      <span className="lt">
+                        {i === 0 ? 'Main ' : 'Recover '}{b.stake}
+                        {i > 0 ? ' × ' + b.runs + ' wins' : ''}
+                        {liveB && i > 0 ? ' · ' + stats.w + '/' + b.runs : ''}
+                      </span>
+                      <span>{col ? '▸' : '▾'}</span>
+                    </div>
+                    {!col && (
+                      <>
+                        <div className="row">
+                          <label>Stake
+                            <input type="number" min="0.35" step="0.05" disabled={running} value={b.stake} onChange={(e) => setBlock(i, { stake: e.target.value })} />
+                          </label>
+                          <label>Wins needed
+                            {i === 0
+                              ? <input disabled value="main" readOnly />
+                              : <input type="number" min="1" max="50" disabled={running} value={b.runs} onChange={(e) => setBlock(i, { runs: e.target.value })} />}
+                          </label>
+                        </div>
+                        {i >= 2 && !running && <button onClick={() => delBlock(i)}>Remove {LETTERS[i]}</button>}
+                      </>
+                    )}
+                  </div>
+                )
+              })}
+              <div className="row">
+                <button disabled={running || ladder.length >= 12} onClick={addBlock}>+ Add block</button>
+                <button onClick={() => setMini(Object.fromEntries(ladder.map((_, i) => [i, true])))}>Minimise all</button>
+              </div>
+              <div className="muted">Each step up risks more money. The bot stops instead of placing a stake that could pass your stop loss.</div>
+            </>
+          )}
+        </section>
+      )}
 
       <section className="card">
         <div className="pcthead">
@@ -499,13 +732,15 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
 
       <section className="card">
         <b>Agent settings</b>
-        <label>Stake list (martingale steps, comma separated)
-          <input type="text" inputMode="decimal" disabled={running} value={cfg.stakes} onChange={(e) => setC({ stakes: e.target.value })} />
-        </label>
+        {!isDiff && (
+          <label>Stake list (martingale steps, comma separated)
+            <input type="text" inputMode="text" disabled={running} value={cfg.stakes} onChange={(e) => setC({ stakes: e.target.value })} />
+          </label>
+        )}
         <div className="row">
-          <label>At end of list
+          <label>{isDiff ? 'After the last block loses' : 'At end of list'}
             <select disabled={running} value={cfg.end} onChange={(e) => setC({ end: e.target.value })}>
-              <option value="restart">Restart at first stake</option>
+              <option value="restart">{isDiff ? 'Restart at A' : 'Restart at first stake'}</option>
               <option value="stop">Stop the agent</option>
             </select>
           </label>
@@ -520,7 +755,7 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
           <label>Stop loss
             <input type="number" min="0" step="0.5" disabled={running} value={cfg.sl} onChange={(e) => setC({ sl: e.target.value })} />
           </label>
-          <label>Take profit (0 = off)
+         <label>Take profit (0 = off)
             <input type="number" min="0" step="0.5" disabled={running} value={cfg.tp} onChange={(e) => setC({ tp: e.target.value })} />
           </label>
         </div>
@@ -536,12 +771,12 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
         </div>
         {cfg.syms.map((sym) => {
           const a = digs.current[sym] || []
-          const d = a.length >= bot.need ? bot.decide(a) : null
+          const d = a.length >= bot.need ? bot.decide(a, cfg) : null
           return (
             <div className="arow" key={sym}>
               <button className={'sname' + (sym === wsym ? ' sel' : '')} onClick={() => setWatch(sym)}>{SYMN[sym]}</button>
               <b>{a.length ? a[a.length - 1] : '…'}</b>
-              <span className={'sig' + (d ? ' on' : '')}>{d ? label(d) : 'scanning'}</span>
+              <span className={'sig' + (d ? ' on' : '')}>{d ? label(d) : a.length < bot.need ? 'loading' : 'scanning'}</span>
             </div>
           )
         })}

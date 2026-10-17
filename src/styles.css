@@ -228,3 +228,18 @@ button:disabled{opacity:.5}
 .circ.flash{animation:mflash .45s ease-out}
 
 .waitbox{background:#2a2410;border:1px solid #d69e2e;color:#faf089;padding:8px 10px;border-radius:8px;font-size:13px}
+
+/* ai-diff */
+.lblock{border:1px solid #0d4a8f;border-radius:10px;padding:8px;display:grid;gap:8px;background:rgba(2,14,32,.6)}
+.lblock.live{border-color:#7cc4ff;box-shadow:0 0 12px rgba(58,160,255,.6)}
+.lhead{display:flex;align-items:center;gap:10px;cursor:pointer;font-size:13px}
+.lhead b{width:26px;height:26px;display:grid;place-items:center;border-radius:6px;background:#0b4a94;color:#fff;flex:0 0 auto}
+.lhead .lt{flex:1;color:#cfe8ff}
+.fchips{display:grid;grid-template-columns:repeat(5,1fr);gap:6px}
+.fchip{border:1px solid #0d4a8f;border-radius:8px;padding:6px 2px;text-align:center;display:grid;gap:2px}
+.fchip b{font-size:17px;color:#fff}
+.fchip small{font-size:10px}
+.fchip.ok{border-color:#19ff7a;box-shadow:0 0 8px rgba(25,255,122,.35)}
+.fchip.low,.fchip.high{opacity:.45;border-color:#7a2030}
+.fchip.fast{border-color:#d69e2e;opacity:.8}
+.fchip.last{outline:2px solid #fff;outline-offset:1px}
