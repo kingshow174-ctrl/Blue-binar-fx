@@ -67,6 +67,7 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
   const seq = useRef(500)
   const gate = useRef(null)
   const raf = useRef(0)
+  const holds = useRef(0)
   const sendRef = useRef(send)
   const tradeOnRef = useRef(tradeOn)
   const curRef = useRef(cur)
@@ -100,7 +101,7 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
     const b = hasB(c.type) ? +c.barrier : null
     return [c.type, b, +c.dur || 1, stake, curRef.current].join('|')
   }
-  const slots = () => Object.keys(openMap.current).length + pend.current.size
+  const slots = () => Object.keys(openMap.current).length + pend.current.size + holds.current
   const exposure = () => {
     let e = 0
     Object.values(openMap.current).forEach((o) => { e += o.meta.stake })
@@ -170,6 +171,10 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
     })
   }
   const ensureAll = () => cfgRef.current.syms.forEach(ensureArmed)
+  const rearm = (sym) => {
+    Object.keys(armTs.current).forEach((x) => { if (x.startsWith(sym + '|')) armTs.current[x] = 0 })
+    ensureArmed(sym)
+  }
 
   const sendBuy = (meta, pid, ask, subId, armed, retried) => {
     const rid = ++seq.current
@@ -192,7 +197,7 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
 
   const fire = (sym) => {
     const c = cfgRef.current
-    const maxOpen = Math.max(1, Math.min(5, +c.maxOpen || 1))
+    const maxOpen = parseStakes(c.stakes).length > 1 ? 1 : Math.max(1, Math.min(5, +c.maxOpen || 1))
     if (slots() >= maxOpen) return false
     if (netRef.current - exposure() <= -Math.abs(+c.sl)) return false
     const stake = curStake()
@@ -204,11 +209,8 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
       delete map[key]
       delete armLatest.current[sym + '|' + key]
       sendBuy(meta, a.id, a.ask, a.subId, true, false)
-      armTs.current[sym + '|' + key] = 0
-      ensureArmed(sym)
     } else {
       slow(meta, false)
-      ensureArmed(sym)
     }
     return true
   }
@@ -300,7 +302,7 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
     addLog(
       (profit >= 0 ? '✅ ' : '❌ ') + SYMN[o.meta.sym] + ' ' + TYPEN[o.meta.type] +
       (o.meta.barrier !== null ? ' ' + o.meta.barrier : '') + ' · stake ' + o.meta.stake +
-      ' · ' + (profit >= 0 ? '+' : '') + profit.toFixed(2)
+      ' · ' + (profit >= 0 ? '+' : '') + profit.toFixed(2) + ' → next stake ' + curStake()
     )
     if (!live) return
     if (curStake() !== oldStake) ensureAll()
@@ -328,6 +330,10 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
       const ar = armReq.current[rid]
       if (ar) {
         if (m.error) {
+          if (m.error.code === 'AlreadySubscribed' || /already subscribed/i.test(m.error.message || '')) {
+            setTimeout(() => rearm(ar.sym), 500)
+            return
+          }
           if (armErr.current[ar.sym] !== m.error.message) {
             armErr.current[ar.sym] = m.error.message
             addLog('⚠ ' + SYMN[ar.sym] + ': ' + m.error.message)
@@ -354,6 +360,16 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
       const r = reqs.current[rid]
       if (!r) return
       if (m.error) {
+        if (r.kind === 'proposal' && (m.error.code === 'AlreadySubscribed' || /already subscribed/i.test(m.error.message || '')) && (r.meta.tries || 0) < 4) {
+          pend.current.delete(rid)
+          holds.current += 1
+          r.meta.tries = (r.meta.tries || 0) + 1
+          setTimeout(() => {
+            holds.current -= 1
+            if (runRef.current) slow(r.meta, r.retried)
+          }, 450)
+          return
+        }
         pend.current.delete(rid)
         if (r.kind === 'buy' && r.armed && !r.retried) {
           addLog('Fast price expired, retrying')
@@ -379,6 +395,7 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
       } else if (m.msg_type === 'buy' && r.kind === 'buy') {
         pend.current.delete(rid)
         forget(r.subId)
+        rearm(r.meta.sym)
         errs.current = 0
         const id = m.buy.contract_id
         openMap.current[String(id)] = { meta: r.meta, t: Date.now() }
@@ -613,7 +630,7 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
   const nextStake = shown[Math.min(stats.idx, shown.length - 1)]
   const needN = ['lt', 'gt', 'eq'].includes(cfg.cond)
   const openNow = Object.keys(openMap.current).length + pend.current.size
-  const maxO = Math.max(1, Math.min(5, +cfg.maxOpen || 1))
+  const maxO = list.length > 1 ? 1 : Math.max(1, Math.min(5, +cfg.maxOpen || 1))
 
   return (
     <>
@@ -746,7 +763,7 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
       <section className="card">
         <b>Stakes, stop loss, take profit</b>
         <label>Stake list (martingale steps, comma separated)
-          <input type="text" inputMode="decimal" disabled={running} value={cfg.stakes} onChange={(e) => setC({ stakes: e.target.value })} />
+          <input type="text" inputMode="text" disabled={running} value={cfg.stakes} onChange={(e) => setC({ stakes: e.target.value })} />
         </label>
         <div className="row">
           <label>At end of list
@@ -768,7 +785,7 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
         </label>
         <div className="row">
           <label>Trades open at once
-            <select disabled={running} value={cfg.maxOpen} onChange={(e) => setC({ maxOpen: +e.target.value })}>
+            <select disabled={running || list.length > 1} value={list.length > 1 ? 1 : cfg.maxOpen} onChange={(e) => setC({ maxOpen: +e.target.value })}>
               {[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}</option>)}
             </select>
           </label>
@@ -776,6 +793,7 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
             <input type="number" min="0" step="0.5" disabled={running} value={cfg.tp} onChange={(e) => setC({ tp: e.target.value })} />
           </label>
         </div>
+        {list.length > 1 && <div className="muted">Stake list is on, so the bot trades one at a time and each stake follows the result of the trade before it. Use a single stake to allow overlapping trades.</div>}
         <div className="muted">More trades at once means fewer skipped signals but more money at risk at the same time. The bot will not open a trade if losing everything already open would pass your stop loss.</div>
       </section>
 
