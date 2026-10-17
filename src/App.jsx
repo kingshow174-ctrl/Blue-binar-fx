@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { login, handleCallback } from './auth.js'
 import Multi from './Multi.jsx'
 import Ai from './Ai.jsx'
+import Matrix from './Matrix.jsx'
 import { bus } from './bus.js'
 
 const APP_ID = import.meta.env.VITE_DERIV_CLIENT_ID
@@ -757,6 +758,7 @@ let rxAt = Date.now()
           </button>
           <button className={tab === 'multi' ? 'on' : ''} onClick={() => setTab('multi')}>Multipurpose</button>
           <button className={'aib' + (tab === 'ai' ? ' on' : '')} onClick={() => setTab('ai')}>🤖 AI Strategies</button>
+          <button className={tab === 'matrix' ? 'on' : ''} onClick={() => setTab('matrix')}>Matrix</button>
         </div>
       </div>
 
@@ -941,6 +943,17 @@ let rxAt = Date.now()
           )}
         </>
       )}
+
+      <div className="multiwrap" style={{ display: tab === 'matrix' ? 'grid' : 'none' }}>
+        <Matrix
+          tradeOn={tradeOn}
+          send={trdSend}
+          cur={cur}
+          demo={acct ? acct.demo : true}
+          addHist={(e) => setHist((h) => [e, ...h].slice(0, 100))}
+          updHist={(id, p) => setHist((h) => h.map((x) => (String(x.id) === String(id) ? { ...x, ...p } : x)))}
+        />
+      </div>
 
       <div className="ai aiwrap" style={{ display: tab === 'ai' ? 'grid' : 'none' }}>
         <Ai
