@@ -28,21 +28,40 @@ const test = (cond, n, d) =>
   cond === 'lt' ? d < n : cond === 'gt' ? d > n : cond === 'eq' ? d === n : cond === 'even' ? d % 2 === 0 : d % 2 === 1
 const parseStakes = (s) =>
   String(s).split(/[\s,;]+/).map(Number).filter((x) => isFinite(x) && x >= 0.35)
-const DEF = {
-  condK: 1, cond: 'lt', condN: 2, type: 'DIGITOVER', barrier: 1, dur: 1, entry: 'confirm',
-  stakes: '1, 2, 4, 8', end: 'restart', after: 'win', maxOpen: 3, sl: 10, tp: 10, syms: ['R_100'],
+const wb = (st) => (hasB(st.type) ? +st.barrier : null)
+const metOfSt = (st, a) => {
+  const k = Math.max(1, +st.condK || 1)
+  return a.length >= k && a.slice(-k).every((d) => test(st.cond, +st.condN, d))
+}
+
+const STRAT_DEF = { on: true, condK: 1, cond: 'lt', condN: 2, type: 'DIGITOVER', barrier: 1, dur: 1, entry: 'confirm' }
+const newId = () => 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5)
+const DEF = { stakes: '1, 2, 4, 8', end: 'restart', after: 'win', maxOpen: 3, sl: 10, tp: 10, syms: ['R_100'] }
+const LEGACY = ['condK', 'cond', 'condN', 'type', 'barrier', 'dur', 'entry']
+const loadCfg = () => {
+  let st = {}
+  try { st = JSON.parse(localStorage.bbfx_multi || '{}') } catch (e) { st = {} }
+  const base = { ...DEF, ...st }
+  if (!Array.isArray(base.strats) || !base.strats.length) {
+    const legacy = {}
+    LEGACY.forEach((k) => { if (st[k] !== undefined) legacy[k] = st[k] })
+    base.strats = [{ ...STRAT_DEF, ...legacy, id: newId() }]
+  }
+  base.strats = base.strats.map((x) => ({ ...STRAT_DEF, ...x, id: x.id || newId() }))
+  LEGACY.forEach((k) => { delete base[k] })
+  return base
 }
 
 export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHist }) {
-  const [cfg, setCfg] = useState(() => {
-    try { return { ...DEF, ...JSON.parse(localStorage.bbfx_multi || '{}') } } catch { return DEF }
-  })
+  const [cfg, setCfg] = useState(loadCfg)
   const [running, setRunning] = useState(false)
   const [stats, setStats] = useState({ net: 0, trades: 0, wins: 0, losses: 0, idx: 0 })
   const [log, setLog] = useState([])
   const [msg, setMsg] = useState('')
   const [waitTxt, setWaitTxt] = useState('')
   const [watch, setWatch] = useState('')
+  const [ldpSel, setLdpSel] = useState('')
+  const [miniS, setMiniS] = useState({})
   const [showC, setShowC] = useState(() => localStorage.bbfx_mcirc !== '0')
   const [circNIn, setCircNIn] = useState(1000)
   const [cd, setCd] = useState([])
@@ -63,15 +82,16 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
   const armedP = useRef({})
   const armTs = useRef({})
   const armErr = useRef({})
+  const armTries = useRef({})
   const entryArm = useRef({})
   const seq = useRef(500)
   const gate = useRef(null)
   const raf = useRef(0)
+  const holds = useRef(0)
   const tickAt = useRef({})
   const paused = useRef(false)
   const pauseTimer = useRef(null)
   const pollAt = useRef({})
-  const holds = useRef(0)
   const sendRef = useRef(send)
   const tradeOnRef = useRef(tradeOn)
   const curRef = useRef(cur)
@@ -84,6 +104,16 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
 
   useEffect(() => { localStorage.bbfx_multi = JSON.stringify(cfg) }, [cfg])
   const setC = (p) => setCfg((c) => ({ ...c, ...p }))
+  const setS = (id, p) => setCfg((c) => ({ ...c, strats: c.strats.map((x) => (x.id === id ? { ...x, ...p } : x)) }))
+  const dupS = (id) => setCfg((c) => {
+    const i = c.strats.findIndex((x) => x.id === id)
+    if (i < 0 || c.strats.length >= 6) return c
+    const arr = [...c.strats]
+    arr.splice(i + 1, 0, { ...c.strats[i], id: newId() })
+    return { ...c, strats: arr }
+  })
+  const delS = (id) => setCfg((c) => (c.strats.length > 1 ? { ...c, strats: c.strats.filter((x) => x.id !== id) } : c))
+
   const addLog = (t) => setLog((l) => [t, ...l].slice(0, 14))
   const bump = () => {
     if (raf.current) return
@@ -100,11 +130,8 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
     const l = stakesList()
     return l[Math.min(idxRef.current, l.length - 1)]
   }
-  const keyOf = (stake) => {
-    const c = cfgRef.current
-    const b = hasB(c.type) ? +c.barrier : null
-    return [c.type, b, +c.dur || 1, stake, curRef.current].join('|')
-  }
+  const keyOf = (st, stake) => [st.type, wb(st), +st.dur || 1, stake, curRef.current].join('|')
+  const keyOfMeta = (m) => [m.type, m.barrier, m.dur, m.stake, curRef.current].join('|')
   const slots = () => Object.keys(openMap.current).length + pend.current.size + holds.current
   const exposure = () => {
     let e = 0
@@ -116,6 +143,11 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
     return e
   }
   const forget = (id) => { if (id) sendRef.current({ forget: id }) }
+  const activeStrats = () => cfgRef.current.strats.filter((x) => x.on)
+  const anyMet = (sym) => {
+    const a = digs.current[sym] || []
+    return activeStrats().some((st) => metOfSt(st, a))
+  }
 
   const stopBot = (why) => {
     paused.current = false
@@ -133,7 +165,7 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
     if (why) addLog('■ ' + why)
   }
 
-  // ---------- ready-to-buy prices: current, first and next stake on every market ----------
+  // ---------- ready-to-buy prices ----------
   const neededStakes = () => {
     const l = stakesList()
     const i = Math.min(idxRef.current, l.length - 1)
@@ -141,15 +173,28 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
     if (i + 1 < l.length) set.add(l[i + 1])
     return [...set]
   }
-  const armOne = (sym, stake, key) => {
-    const c = cfgRef.current
-    const barrier = hasB(c.type) ? +c.barrier : null
+  const wantList = () => {
+    const stakes = neededStakes()
+    const uniq = new Map()
+    activeStrats().forEach((st) => stakes.forEach((stake) => {
+      const k = keyOf(st, stake)
+      if (!uniq.has(k)) uniq.set(k, { st, stake, k })
+    }))
+    let arr = [...uniq.values()]
+    if (arr.length * cfgRef.current.syms.length > 24) {
+      const cs = curStake()
+      arr = arr.filter((x) => x.stake === cs)
+    }
+    return arr
+  }
+  const armOne = (sym, st, stake, key) => {
+    const barrier = wb(st)
     const rid = ++seq.current
     armReq.current[rid] = { sym, key }
     armLatest.current[sym + '|' + key] = rid
     const p = {
       proposal: 1, subscribe: 1, req_id: rid, amount: stake, basis: 'stake',
-      contract_type: c.type, currency: curRef.current || 'USD', duration: +c.dur || 1,
+      contract_type: st.type, currency: curRef.current || 'USD', duration: +st.dur || 1,
       duration_unit: 't', underlying_symbol: sym,
     }
     if (barrier !== null) p.barrier = String(barrier)
@@ -157,23 +202,22 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
   }
   const ensureArmed = (sym) => {
     if (!runRef.current || !tradeOnRef.current) return
-    const stakes = neededStakes()
+    const want = wantList()
     const map = (armedP.current[sym] = armedP.current[sym] || {})
-    const want = new Set(stakes.map(keyOf))
+    const wantKeys = new Set(want.map((w) => w.k))
     Object.keys(map).forEach((k) => {
-      if (!want.has(k)) {
+      if (!wantKeys.has(k)) {
         forget(map[k].subId)
         delete armLatest.current[sym + '|' + k]
         delete map[k]
       }
     })
-    stakes.forEach((st) => {
-      const k = keyOf(st)
-      if (map[k]) return
-      const slot = sym + '|' + k
+    want.forEach((w) => {
+      if (map[w.k]) return
+      const slot = sym + '|' + w.k
       if (Date.now() - (armTs.current[slot] || 0) < 3000) return
       armTs.current[slot] = Date.now()
-      armOne(sym, st, k)
+      armOne(sym, w.st, w.stake, w.k)
     })
   }
   const ensureAll = () => cfgRef.current.syms.forEach(ensureArmed)
@@ -201,14 +245,15 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
     sendRef.current(p)
   }
 
-  const fire = (sym) => {
+  const fire = (sym, st) => {
     const c = cfgRef.current
     const maxOpen = parseStakes(c.stakes).length > 1 ? 1 : Math.max(1, Math.min(5, +c.maxOpen || 1))
     if (slots() >= maxOpen) return false
     if (netRef.current - exposure() <= -Math.abs(+c.sl)) return false
     const stake = curStake()
-    const meta = { sym, stake, type: c.type, barrier: hasB(c.type) ? +c.barrier : null, dur: +c.dur || 1 }
-    const key = keyOf(stake)
+    const si = c.strats.findIndex((x) => x.id === st.id)
+    const meta = { sym, stake, type: st.type, barrier: wb(st), dur: +st.dur || 1, tag: 'S' + (si + 1) }
+    const key = keyOf(st, stake)
     const map = (armedP.current[sym] = armedP.current[sym] || {})
     const a = map[key]
     if (a && a.id) {
@@ -221,17 +266,9 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
     return true
   }
 
-  const condMet = (sym) => {
-    const c = cfgRef.current
-    const k = Math.max(1, +c.condK || 1)
-    const a = digs.current[sym] || []
-    return a.length >= k && a.slice(-k).every((d) => test(c.cond, +c.condN, d))
-  }
-
   // runs on every tick, before any screen redraw
   const evalTick = (sym) => {
     if (!runRef.current || !tradeOnRef.current) return
-    const c = cfgRef.current
     const a = digs.current[sym] || []
     const d = a[a.length - 1]
     const g = gate.current
@@ -243,24 +280,27 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
           return
         }
       } else if (!g.sawFalse) {
-        if (!condMet(sym)) g.sawFalse = true
+        if (!anyMet(sym)) g.sawFalse = true
         return
       }
       gate.current = null
       setWaitTxt('')
     }
-    if (c.entry === 'confirm') {
-      if (entryArm.current[sym]) {
-        if (isWin(c.type, d, hasB(c.type) ? +c.barrier : null)) {
-          entryArm.current[sym] = false
-          fire(sym)
+    activeStrats().forEach((st) => {
+      if (st.entry === 'confirm') {
+        const ek = sym + '|' + st.id
+        if (entryArm.current[ek]) {
+          if (isWin(st.type, d, wb(st))) {
+            entryArm.current[ek] = false
+            fire(sym, st)
+          }
+          return
         }
+        if (metOfSt(st, a)) entryArm.current[ek] = true
         return
       }
-      if (condMet(sym)) entryArm.current[sym] = true
-      return
-    }
-    if (condMet(sym)) fire(sym)
+      if (metOfSt(st, a)) fire(sym, st)
+    })
   }
 
   const finish = (c, o) => {
@@ -290,7 +330,7 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
       if (profit < 0 && cfgRef.current.after !== 'now') {
         const mode = cfgRef.current.after === 'fresh' ? 'fresh' : 'win'
         gate.current = { mode, sym: o.meta.sym, type: o.meta.type, barrier: o.meta.barrier, ok: false, sawFalse: false }
-        entryArm.current[o.meta.sym] = false
+        Object.keys(entryArm.current).forEach((k) => { if (k.startsWith(o.meta.sym + '|')) entryArm.current[k] = false })
         setWaitTxt(
           mode === 'win'
             ? 'Waiting after the loss: needs a winning digit (' + TYPEN[o.meta.type] + (o.meta.barrier !== null ? ' ' + o.meta.barrier : '') + ') on ' + SYMN[o.meta.sym] + ', then the next signal'
@@ -306,7 +346,7 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
       losses: s.losses + (profit < 0 ? 1 : 0), idx,
     }))
     addLog(
-      (profit >= 0 ? '✅ ' : '❌ ') + SYMN[o.meta.sym] + ' ' + TYPEN[o.meta.type] +
+      (profit >= 0 ? '✅ ' : '❌ ') + (o.meta.tag || '') + ' ' + SYMN[o.meta.sym] + ' ' + TYPEN[o.meta.type] +
       (o.meta.barrier !== null ? ' ' + o.meta.barrier : '') + ' · stake ' + o.meta.stake +
       ' · ' + (profit >= 0 ? '+' : '') + profit.toFixed(2) + ' → next stake ' + curStake()
     )
@@ -320,6 +360,7 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
 
   // ---------- messages from the trading socket ----------
   useEffect(() => {
+    const already = (e) => e.code === 'AlreadySubscribed' || /already subscribed/i.test(e.message || '')
     const h = (m) => {
       if (m.msg_type === 'proposal_open_contract') {
         const c = m.proposal_open_contract
@@ -335,9 +376,12 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
 
       const ar = armReq.current[rid]
       if (ar) {
+        const slot = ar.sym + '|' + ar.key
         if (m.error) {
-          if (m.error.code === 'AlreadySubscribed' || /already subscribed/i.test(m.error.message || '')) {
-            setTimeout(() => rearm(ar.sym), 500)
+          if (already(m.error)) {
+            const n = (armTries.current[slot] || 0) + 1
+            armTries.current[slot] = n
+            if (n <= 5) setTimeout(() => rearm(ar.sym), 600)
             return
           }
           if (armErr.current[ar.sym] !== m.error.message) {
@@ -347,7 +391,6 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
           return
         }
         if (m.msg_type === 'proposal') {
-          const slot = ar.sym + '|' + ar.key
           if (!runRef.current || armLatest.current[slot] !== rid) {
             if (m.subscription) forget(m.subscription.id)
             return
@@ -356,6 +399,7 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
           const old = map[ar.key]
           if (old && old.subId && m.subscription && old.subId !== m.subscription.id) forget(old.subId)
           armErr.current[ar.sym] = ''
+          armTries.current[slot] = 0
           map[ar.key] = {
             id: m.proposal.id, ask: m.proposal.ask_price, subId: m.subscription && m.subscription.id,
           }
@@ -366,7 +410,7 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
       const r = reqs.current[rid]
       if (!r) return
       if (m.error) {
-        if (r.kind === 'proposal' && (m.error.code === 'AlreadySubscribed' || /already subscribed/i.test(m.error.message || '')) && (r.meta.tries || 0) < 4) {
+        if (r.kind === 'proposal' && already(m.error) && (r.meta.tries || 0) < 4) {
           pend.current.delete(rid)
           holds.current += 1
           r.meta.tries = (r.meta.tries || 0) + 1
@@ -379,7 +423,7 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
         pend.current.delete(rid)
         if (r.kind === 'buy' && r.armed && !r.retried) {
           addLog('Fast price expired, retrying')
-          const k = keyOf(r.meta.stake)
+          const k = keyOfMeta(r.meta)
           const map = armedP.current[r.meta.sym]
           if (map && map[k]) { forget(map[k].subId); delete map[k] }
           delete armLatest.current[r.meta.sym + '|' + k]
@@ -525,6 +569,7 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
     }
   }, [cfg.syms.join(',')])
 
+  // pause when the trading connection drops, resume by itself
   useEffect(() => {
     if (!runRef.current) return
     if (!tradeOn) {
@@ -566,10 +611,15 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
     const c = cfgRef.current
     if (!tradeOnRef.current) return setMsg('Log in first')
     if (!c.syms.length) return setMsg('Pick at least one market')
+    if (!c.strats.some((x) => x.on)) return setMsg('Turn on at least one strategy')
     if (!parseStakes(c.stakes).length) return setMsg('Add at least one stake (minimum 0.35)')
     if (!(+c.sl > 0)) return setMsg('Set a stop loss above 0')
-    if (c.type === 'DIGITOVER' && +c.barrier === 9) return setMsg('Over needs a digit 0-8')
-    if (c.type === 'DIGITUNDER' && +c.barrier === 0) return setMsg('Under needs a digit 1-9')
+    for (let i = 0; i < c.strats.length; i++) {
+      const st = c.strats[i]
+      if (!st.on) continue
+      if (st.type === 'DIGITOVER' && +st.barrier === 9) return setMsg('Strategy ' + (i + 1) + ': Over needs a digit 0-8')
+      if (st.type === 'DIGITUNDER' && +st.barrier === 0) return setMsg('Strategy ' + (i + 1) + ': Under needs a digit 1-9')
+    }
     if (!demo && !confirm('REAL account. The bot will place trades automatically with real money. Start?')) return
     gate.current = null
     entryArm.current = {}
@@ -582,6 +632,7 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
     armLatest.current = {}
     armTs.current = {}
     armErr.current = {}
+    armTries.current = {}
     setStats({ net: 0, trades: 0, wins: 0, losses: 0, idx: 0 })
     paused.current = false
     runRef.current = true
@@ -594,6 +645,7 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
     setC({ syms: cfg.syms.includes(v) ? cfg.syms.filter((x) => x !== v) : [...cfg.syms, v] })
 
   const wsym = cfg.syms.includes(watch) ? watch : cfg.syms[0]
+  const viewSt = cfg.strats.find((x) => x.id === ldpSel) || cfg.strats[0]
 
   // ----- circles: own socket for the market shown in the LDP -----
   const circN = Math.max(100, Math.min(5000, +circNIn || 1000))
@@ -654,25 +706,23 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
   const ccls = (c) => (cd.length === 0 ? '' : c === cmax ? 'g' : c === cmin ? 'r' : c === csecond ? 'b' : '')
 
   const arr = (wsym && digs.current[wsym]) || []
-  const bnum = +cfg.barrier
-  const k = Math.max(1, +cfg.condK || 1)
-  const metOf = (a) => a.length >= k && a.slice(-k).every((d) => test(cfg.cond, +cfg.condN, d))
+  const vbar = +viewSt.barrier
+  const vNeedN = ['lt', 'gt', 'eq'].includes(viewSt.cond)
   const kindOf = (d) =>
-    cfg.type === 'DIGITOVER' || cfg.type === 'DIGITUNDER'
-      ? (d > bnum ? ['O', 'g'] : d < bnum ? ['U', 'r'] : ['S', 'b'])
-      : cfg.type === 'DIGITMATCH' || cfg.type === 'DIGITDIFF'
-      ? (d === bnum ? ['M', 'g'] : ['D', 'r'])
+    viewSt.type === 'DIGITOVER' || viewSt.type === 'DIGITUNDER'
+      ? (d > vbar ? ['O', 'g'] : d < vbar ? ['U', 'r'] : ['S', 'b'])
+      : viewSt.type === 'DIGITMATCH' || viewSt.type === 'DIGITDIFF'
+      ? (d === vbar ? ['M', 'g'] : ['D', 'r'])
       : (d % 2 ? ['O', 'r'] : ['E', 'g'])
   const ldpLabel =
-    cfg.type === 'DIGITOVER' || cfg.type === 'DIGITUNDER'
-      ? 'O over ' + bnum + ' · S same · U under'
-      : cfg.type === 'DIGITMATCH' || cfg.type === 'DIGITDIFF'
-      ? 'M = digit ' + bnum + ' · D = other digits'
+    viewSt.type === 'DIGITOVER' || viewSt.type === 'DIGITUNDER'
+      ? 'O over ' + vbar + ' · S same · U under'
+      : viewSt.type === 'DIGITMATCH' || viewSt.type === 'DIGITDIFF'
+      ? 'M = digit ' + vbar + ' · D = other digits'
       : 'E even · O odd'
   const list = parseStakes(cfg.stakes)
   const shown = list.length ? list : [1]
   const nextStake = shown[Math.min(stats.idx, shown.length - 1)]
-  const needN = ['lt', 'gt', 'eq'].includes(cfg.cond)
   const openNow = Object.keys(openMap.current).length + pend.current.size
   const maxO = list.length > 1 ? 1 : Math.max(1, Math.min(5, +cfg.maxOpen || 1))
 
@@ -702,13 +752,13 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
             <div className="circles">
               {ccount.map((c, d) => {
                 const parts = []
-                if (needN && d === +cfg.condN) parts.push('SIGNAL')
-                if (hasB(cfg.type) && d === bnum) parts.push('TRADE')
+                if (vNeedN && d === +viewSt.condN) parts.push('SIGNAL')
+                if (hasB(viewSt.type) && d === vbar) parts.push('TRADE')
                 const isLast = clast === d
                 return (
                   <div className="cwrap" key={d + '-' + (isLast ? cd.length : 'x')}>
                     <i className="pill">{parts.join(' ')}</i>
-                    <div className={'circ ' + ccls(c) + (hasB(cfg.type) && d === bnum ? ' tsel' : '') + (isLast ? ' flash' : '')}>
+                    <div className={'circ ' + ccls(c) + (hasB(viewSt.type) && d === vbar ? ' tsel' : '') + (isLast ? ' flash' : '')}>
                       <b>{d}</b>
                       <small>{cd.length ? ((c / cn) * 100).toFixed(1) + '%' : '…'}</small>
                     </div>
@@ -727,11 +777,18 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
       <section className="card">
         <div className="pcthead">
           <b>LDP</b>
-          <span className={'badge ' + (metOf(arr) ? 'on' : '')}>{metOf(arr) ? 'CONDITION MET' : 'waiting'}</span>
+          <span className={'badge ' + (metOfSt(viewSt, arr) ? 'on' : '')}>{metOfSt(viewSt, arr) ? 'CONDITION MET' : 'waiting'}</span>
         </div>
         <select value={wsym || ''} onChange={(e) => setWatch(e.target.value)} disabled={!cfg.syms.length}>
           {cfg.syms.map((v) => <option key={v} value={v}>{SYMN[v]}</option>)}
         </select>
+        {cfg.strats.length > 1 && (
+          <label>Boxes show
+            <select value={viewSt.id} onChange={(e) => setLdpSel(e.target.value)}>
+              {cfg.strats.map((x, i) => <option key={x.id} value={x.id}>Strategy {i + 1}</option>)}
+            </select>
+          </label>
+        )}
         <div className="osu">
           {Array.from({ length: 30 }, (_, i) => {
             const d = arr[arr.length - 1 - i]
@@ -757,52 +814,71 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
         {running && <div className="muted">Open trades: {openNow} / {maxO}</div>}
       </section>
 
-      <section className="card">
-        <b>Strategy</b>
-        <div className="row">
-          <label>Last digits to check
-            <input type="number" min="1" max="10" disabled={running} value={cfg.condK} onChange={(e) => setC({ condK: e.target.value })} />
-          </label>
-          <label>Condition
-            <select disabled={running} value={cfg.cond} onChange={(e) => setC({ cond: e.target.value })}>
-              {CONDS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-            </select>
-          </label>
-        </div>
-        {needN && (
-          <label>Digit
-            <input type="number" min="0" max="9" disabled={running} value={cfg.condN} onChange={(e) => setC({ condN: e.target.value })} />
-          </label>
-        )}
-        <div className="row">
-          <label>Then trade
-            <select disabled={running} value={cfg.type} onChange={(e) => setC({ type: e.target.value })}>
-              {TYPES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-            </select>
-          </label>
-          <label>Ticks
-            <input type="number" min="1" max="10" disabled={running} value={cfg.dur} onChange={(e) => setC({ dur: e.target.value })} />
-          </label>
-        </div>
-        {hasB(cfg.type) && (
-          <div className="pick">
-            {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((d) => (
-              <button key={d} disabled={running} className={bnum === d ? 'on' : ''} onClick={() => setC({ barrier: d })}>{d}</button>
-            ))}
-          </div>
-        )}
-        <label>Entry
-          <select disabled={running} value={cfg.entry} onChange={(e) => setC({ entry: e.target.value })}>
-            <option value="confirm">After the signal, wait for one winning digit, then trade</option>
-            <option value="now">Trade immediately on the signal</option>
-          </select>
-        </label>
-        <div className="muted">
-          When the last {k} digit{k > 1 ? 's' : ''} {CONDN[cfg.cond]}{needN ? ' ' + cfg.condN : ''}
-          {cfg.entry === 'confirm' ? ', wait for one winning digit, then ' : ' → '}
-          {TYPEN[cfg.type]}{hasB(cfg.type) ? ' ' + bnum : ''}
-        </div>
-      </section>
+      {cfg.strats.map((st, i) => {
+        const needN = ['lt', 'gt', 'eq'].includes(st.cond)
+        const kk = Math.max(1, +st.condK || 1)
+        const open = !miniS[st.id]
+        return (
+          <section className={'card' + (st.on ? '' : ' off')} key={st.id}>
+            <div className="pcthead">
+              <b>Strategy {i + 1}{st.on ? '' : ' (off)'}</b>
+              <button className="smallbtn" onClick={() => setMiniS((m) => ({ ...m, [st.id]: open }))}>{open ? 'Minimise' : 'Expand'}</button>
+            </div>
+            {open && (
+              <>
+                <div className="row">
+                  <label>Last digits to check
+                    <input type="number" min="1" max="10" disabled={running} value={st.condK} onChange={(e) => setS(st.id, { condK: e.target.value })} />
+                  </label>
+                  <label>Condition
+                    <select disabled={running} value={st.cond} onChange={(e) => setS(st.id, { cond: e.target.value })}>
+                      {CONDS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                    </select>
+                  </label>
+                </div>
+                {needN && (
+                  <label>Digit
+                    <input type="number" min="0" max="9" disabled={running} value={st.condN} onChange={(e) => setS(st.id, { condN: e.target.value })} />
+                  </label>
+                )}
+                <div className="row">
+                  <label>Then trade
+                    <select disabled={running} value={st.type} onChange={(e) => setS(st.id, { type: e.target.value })}>
+                      {TYPES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                    </select>
+                  </label>
+                  <label>Ticks
+                    <input type="number" min="1" max="10" disabled={running} value={st.dur} onChange={(e) => setS(st.id, { dur: e.target.value })} />
+                  </label>
+                </div>
+                {hasB(st.type) && (
+                  <div className="pick">
+                    {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((d) => (
+                      <button key={d} disabled={running} className={+st.barrier === d ? 'on' : ''} onClick={() => setS(st.id, { barrier: d })}>{d}</button>
+                    ))}
+                  </div>
+                )}
+                <label>Entry
+                  <select disabled={running} value={st.entry} onChange={(e) => setS(st.id, { entry: e.target.value })}>
+                    <option value="confirm">After the signal, wait for one winning digit, then trade</option>
+                    <option value="now">Trade immediately on the signal</option>
+                  </select>
+                </label>
+              </>
+            )}
+            <div className="muted">
+              S{i + 1}: when the last {kk} digit{kk > 1 ? 's' : ''} {CONDN[st.cond]}{needN ? ' ' + st.condN : ''}
+              {st.entry === 'confirm' ? ', wait for one winning digit, then ' : ' → '}
+              {TYPEN[st.type]}{hasB(st.type) ? ' ' + st.barrier : ''}
+            </div>
+            <div className="row">
+              <button disabled={running} onClick={() => setS(st.id, { on: !st.on })}>{st.on ? 'Turn off' : 'Turn on'}</button>
+              <button disabled={running || cfg.strats.length >= 6} onClick={() => dupS(st.id)}>Duplicate</button>
+              {cfg.strats.length > 1 && <button disabled={running} onClick={() => delS(st.id)}>Remove</button>}
+            </div>
+          </section>
+        )
+      })}
 
       <section className="card">
         <b>Stakes, stop loss, take profit</b>
@@ -838,7 +914,7 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
           </label>
         </div>
         {list.length > 1 && <div className="muted">Stake list is on, so the bot trades one at a time and each stake follows the result of the trade before it. Use a single stake to allow overlapping trades.</div>}
-        <div className="muted">More trades at once means fewer skipped signals but more money at risk at the same time. The bot will not open a trade if losing everything already open would pass your stop loss.</div>
+        <div className="muted">The bot will not open a trade if losing everything already open would pass your stop loss. Stake list, stop loss and take profit are shared by all strategies.</div>
       </section>
 
       <section className="card">
@@ -850,8 +926,8 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
         </div>
         {cfg.syms.map((sym) => {
           const a = digs.current[sym] || []
-          const met = metOf(a)
-          const armedE = cfg.entry === 'confirm' && entryArm.current[sym]
+          const met = cfg.strats.some((x) => x.on && metOfSt(x, a))
+          const armedE = cfg.strats.some((x) => x.on && x.entry === 'confirm' && entryArm.current[sym + '|' + x.id])
           return (
             <div className="mrow" key={sym}>
               <button className={'sname' + (sym === wsym ? ' sel' : '')} onClick={() => setWatch(sym)}>{SYMN[sym]}</button>
