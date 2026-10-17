@@ -504,6 +504,7 @@ export default function App() {
     let s
     let retry
     let ping
+let rxAt = Date.now()
     const connect = () => {
       if (dead) return
       fetch('/api/otp/' + accId, { method: 'POST', headers })
@@ -520,16 +521,21 @@ export default function App() {
           trd.current = s
           s.onopen = () => {
             setTradeOn(true)
+            rxAt = Date.now()
             s.send(JSON.stringify({ balance: 1, subscribe: 1 }))
             clearInterval(ping)
-            ping = setInterval(() => { if (s.readyState === 1) s.send(JSON.stringify({ ping: 1 })) }, 25000)
+            ping = setInterval(() => {
+              if (s.readyState !== 1) return
+              if (Date.now() - rxAt > 25000) { s.close(); return }
+              s.send(JSON.stringify({ ping: 1 }))
+            }, 8000)
           }
           s.onclose = () => {
             clearInterval(ping)
             setTradeOn(false)
             if (!dead) retry = setTimeout(connect, 1500)
           }
-          s.onmessage = onTrade
+          s.onmessage = (ev) => { rxAt = Date.now(); onTrade(ev) }
         })
         .catch((e) => {
           note('Reconnecting… ' + e.message)

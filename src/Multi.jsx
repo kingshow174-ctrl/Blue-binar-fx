@@ -67,6 +67,10 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
   const seq = useRef(500)
   const gate = useRef(null)
   const raf = useRef(0)
+  const tickAt = useRef({})
+  const paused = useRef(false)
+  const pauseTimer = useRef(null)
+  const pollAt = useRef({})
   const holds = useRef(0)
   const sendRef = useRef(send)
   const tradeOnRef = useRef(tradeOn)
@@ -114,6 +118,8 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
   const forget = (id) => { if (id) sendRef.current({ forget: id }) }
 
   const stopBot = (why) => {
+    paused.current = false
+    clearTimeout(pauseTimer.current)
     runRef.current = false
     gate.current = null
     entryArm.current = {}
@@ -411,26 +417,32 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
     return () => bus.fns.delete(h)
   }, [])
 
-  // ---------- watchdog + keep prices ready while running ----------
+  // ---------- watchdog: poll overdue results, keep prices ready ----------
   useEffect(() => {
     if (!running) return
     const t = setInterval(() => {
       const now = Date.now()
       pend.current.forEach((rid) => {
         const r = reqs.current[rid]
-        if (!r || now - r.t > 12000) {
+        if (!r || now - r.t > 8000) {
           pend.current.delete(rid)
           addLog('No reply to a trade request, skipped')
         }
       })
       Object.entries(openMap.current).forEach(([id, o]) => {
-        if (now - o.t > 65000) {
+        const age = now - o.t
+        const expect = ((o.meta.dur || 1) * 2.5 + 5) * 1000
+        if (age > expect && now - (pollAt.current[id] || 0) > 3000 && !paused.current) {
+          pollAt.current[id] = now
+          sendRef.current({ proposal_open_contract: 1, contract_id: Number(id), req_id: ++seq.current })
+        }
+        if (age > 90000) {
           delete openMap.current[id]
           stopBot('No result received for a trade, stopped for safety')
         }
       })
       ensureAll()
-    }, 3000)
+    }, 2000)
     return () => clearInterval(t)
   }, [running])
 
@@ -450,6 +462,7 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
         sock.send(JSON.stringify({ ticks: sym, subscribe: 1 }))
       }
       sock.onopen = () => {
+        tickAt.current = { __open: Date.now() }
         digs.current = {}
         syms.forEach((sym) => {
           sock.send(JSON.stringify({ ticks_history: sym, count: 60, end: 'latest', style: 'ticks' }))
@@ -482,6 +495,7 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
           pip.current[sym] = t.pip_size
           const d = +t.quote.toFixed(t.pip_size).slice(-1)
           digs.current[sym] = [...(digs.current[sym] || []).slice(-59), d]
+          tickAt.current[sym] = Date.now()
           evalTick(sym)
           bump()
         }
@@ -489,19 +503,48 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
     }
     connect()
     const refresh = setInterval(() => force((x) => x + 1), 1000)
+    const stale = setInterval(() => {
+      if (document.visibilityState !== 'visible' || !sock || sock.readyState !== 1) return
+      const now = Date.now()
+      const opened = tickAt.current.__open || now
+      const bad = syms.some((sym) => now - (tickAt.current[sym] || opened) > 7000)
+      if (bad) {
+        addLog('Tick feed stalled, reconnecting')
+        sock.close()
+      }
+    }, 2000)
     const vis = () => { if (document.visibilityState === 'visible' && sock) sock.close() }
     document.addEventListener('visibilitychange', vis)
     return () => {
       dead = true
       clearTimeout(retry)
       clearInterval(refresh)
+      clearInterval(stale)
       document.removeEventListener('visibilitychange', vis)
       if (sock) sock.close()
     }
   }, [cfg.syms.join(',')])
 
   useEffect(() => {
-    if (!tradeOn && runRef.current) stopBot('Trading connection lost, bot stopped')
+    if (!runRef.current) return
+    if (!tradeOn) {
+      paused.current = true
+      pend.current.clear()
+      armedP.current = {}
+      armLatest.current = {}
+      armTs.current = {}
+      setMsg('Connection lost, reconnecting… the bot resumes by itself')
+      addLog('Connection lost, waiting to reconnect')
+      pauseTimer.current = setTimeout(() => {
+        if (runRef.current && paused.current) stopBot('Could not reconnect in 60 seconds, bot stopped')
+      }, 60000)
+    } else if (paused.current) {
+      paused.current = false
+      clearTimeout(pauseTimer.current)
+      setMsg('Running')
+      addLog('Reconnected, resuming')
+      ensureAll()
+    }
   }, [tradeOn])
 
   useEffect(() => {
@@ -540,6 +583,7 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
     armTs.current = {}
     armErr.current = {}
     setStats({ net: 0, trades: 0, wins: 0, losses: 0, idx: 0 })
+    paused.current = false
     runRef.current = true
     setRunning(true)
     setMsg('Running')
