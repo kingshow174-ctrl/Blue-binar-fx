@@ -74,14 +74,22 @@ const BOTS = [
     },
   },
   {
-    id: 'diff', name: 'DIFF-RADAR', need: 100,
-    desc: 'Differs on the digit that just appeared, skipping low-%, high-% and fast-moving digits. Recovery ladder A-E',
+    id: 'diff', name: 'DIFF-RADAR', need: 20,
+    desc: 'Digit seen 5+ times in the last 20 and just appeared → Differs on it (settings below)',
     decide: (a, c) => {
-      if (a.length < 100) return null
-      const last = a[a.length - 1]
-      const info = diffInfo(a, c)
-      if (info.low.has(last) || info.high.has(last) || info.fast.has(last)) return null
-      return { type: 'DIGITDIFF', barrier: last }
+      if (c.dmode === 'filter') {
+        if (a.length < 100) return null
+        const last = a[a.length - 1]
+        const info = diffInfo(a, c)
+        if (info.low.has(last) || info.high.has(last) || info.fast.has(last)) return null
+        return { type: 'DIGITDIFF', barrier: last }
+      }
+      const N = clamp(Math.round(+c.cwin || 20), 5, 100)
+      const K = clamp(Math.round(+c.ccount || 5), 2, 50)
+      if (a.length < N) return null
+      const w = a.slice(-N)
+      const d = w[w.length - 1]
+      return w.filter((x) => x === d).length >= K ? { type: 'DIGITDIFF', barrier: d } : null
     },
   },
   {
@@ -93,7 +101,7 @@ const BOTS = [
 const BOTN = Object.fromEntries(BOTS.map((b) => [b.id, b]))
 const DEF = {
   bot: 'neo', syms: ['R_100'], stakes: '1, 2, 4, 8', end: 'restart', after: 'win', sl: 10, tp: 10,
-  ladder: DEF_LADDER, dwin: 500, dspeed: 30, dfast: true, dfastN: 1, dlow: 2, dhigh: 0,
+  ladder: DEF_LADDER, dmode: 'classic', ccount: 5, cwin: 20, dstake: 'list', dwin: 500, dspeed: 30, dfast: true, dfastN: 1, dlow: 2, dhigh: 0,
 }
 
 function MatrixRain({ active }) {
@@ -201,7 +209,9 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
   const isDiff = bot.id === 'diff'
   const dW = clamp(Math.round(+cfg.dwin || 500), 100, 2000)
   const dS = clamp(Math.round(+cfg.dspeed || 30), 5, 200)
-  const keep = isDiff ? dW + dS + 20 : 60
+  const ladderUI = isDiff && cfg.dstake === 'ladder'
+  const filterUI = isDiff && cfg.dmode === 'filter'
+  const keep = filterUI ? dW + dS + 20 : 60
   cfgRef.current = cfg
   botRef.current = bot
   sendRef.current = send
@@ -212,6 +222,7 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
   useEffect(() => { localStorage.bbfx_ai = JSON.stringify(cfg) }, [cfg])
   const setC = (p) => setCfg((c) => ({ ...c, ...p }))
   const addLog = (t) => setLog((l) => ['[' + stamp() + '] ' + t, ...l].slice(0, 14))
+  const ladderOn = () => botRef.current.id === 'diff' && cfgRef.current.dstake === 'ladder'
 
   const stakesList = () => {
     const l = parseStakes(cfgRef.current.stakes)
@@ -224,7 +235,7 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
     return l.length ? l : DEF_LADDER
   }
   const curStake = () => {
-    if (botRef.current.id === 'diff') {
+    if (ladderOn()) {
       const L = ladderList()
       return L[Math.min(levelRef.current, L.length - 1)].stake
     }
@@ -263,7 +274,7 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
     }
     if (meta.barrier !== null) p.barrier = String(meta.barrier)
     sendRef.current(p)
-    const lv = botRef.current.id === 'diff' ? ' [' + LETTERS[Math.min(levelRef.current, 11)] + ']' : ''
+    const lv = ladderOn() ? ' [' + LETTERS[Math.min(levelRef.current, 11)] + ']' : ''
     addLog(meta.bot + ' FIRE ' + SYMN[sym] + ' ' + label(dec) + ' stake ' + stake + lv)
     clearTimeout(dog.current)
     dog.current = setTimeout(() => {
@@ -309,7 +320,7 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
     let note = ''
     let showIdx = 0
     let showW = 0
-    if (botRef.current.id === 'diff') {
+    if (ladderOn()) {
       const L = ladderList()
       let lvl = levelRef.current
       let w = winsRef.current
@@ -509,7 +520,7 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
     const c = cfgRef.current
     if (!tradeOnRef.current) return setMsg('Log in first')
     if (!c.syms.length) return setMsg('Pick at least one market')
-    if (botRef.current.id === 'diff') {
+    if (ladderOn()) {
       const lad = c.ladder || []
       const bad = lad.findIndex((b) => !(Number(b.stake) >= 0.35))
       if (bad >= 0) return setMsg('Block ' + LETTERS[bad] + ' needs a stake of at least 0.35')
@@ -550,12 +561,12 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
   const wsym = cfg.syms.includes(watch) ? watch : cfg.syms[0]
   const arr = (wsym && digs.current[wsym]) || []
   const decNow = arr.length >= bot.need ? bot.decide(arr, cfg) : null
-  const info = isDiff && arr.length >= 100 ? diffInfo(arr, cfg) : null
+  const info = filterUI && arr.length >= 100 ? diffInfo(arr, cfg) : null
   const lastD = arr.length ? arr[arr.length - 1] : -1
   const rstate = running ? (busy.current ? 'trade' : gate.current ? 'wait' : 'scan') : 'idle'
   const shown = parseStakes(cfg.stakes).length ? parseStakes(cfg.stakes) : [1]
   const lad = ladderList()
-  const nextStake = isDiff
+  const nextStake = ladderUI
     ? lad[Math.min(stats.idx, lad.length - 1)].stake
     : shown[Math.min(stats.idx, shown.length - 1)]
   const live = running
@@ -596,11 +607,44 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
         <div className="sum">
           <div><small>Net P/L</small><b className={stats.net >= 0 ? 'win' : 'loss'}>{stats.net >= 0 ? '+' : ''}{stats.net.toFixed(2)}</b></div>
           <div><small>Win / Loss</small><b>{stats.wins} / {stats.losses}</b></div>
-          <div><small>{isDiff ? 'Block ' + LETTERS[Math.min(stats.idx, 11)] + ' stake' : 'Next stake'}</small><b>{nextStake}</b></div>
+          <div><small>{ladderUI ? 'Block ' + LETTERS[Math.min(stats.idx, 11)] + ' stake' : 'Next stake'}</small><b>{nextStake}</b></div>
         </div>
       </section>
 
       {isDiff && (
+        <section className="card">
+          <b>DIFF-RADAR setup</b>
+          <label>Signal
+            <select disabled={running} value={cfg.dmode} onChange={(e) => setC({ dmode: e.target.value })}>
+              <option value="classic">Classic: digit seen N+ times in the last M ticks</option>
+              <option value="filter">Filtered: skip low-%, high-% and fast digits</option>
+            </select>
+          </label>
+          {cfg.dmode !== 'filter' && (
+            <div className="row">
+              <label>Seen at least (times)
+                <input type="number" min="2" max="50" disabled={running} value={cfg.ccount} onChange={(e) => setC({ ccount: e.target.value })} />
+              </label>
+              <label>In the last (ticks)
+                <input type="number" min="5" max="100" disabled={running} value={cfg.cwin} onChange={(e) => setC({ cwin: e.target.value })} />
+              </label>
+            </div>
+          )}
+          <label>Staking
+            <select disabled={running} value={cfg.dstake} onChange={(e) => setC({ dstake: e.target.value })}>
+              <option value="list">Stake list (martingale steps)</option>
+              <option value="ladder">Recovery ladder (blocks A, B, C…)</option>
+            </select>
+          </label>
+          <div className="muted">
+            {cfg.dmode === 'filter'
+              ? 'Differs on the digit that just appeared unless the digit filter skips it.'
+              : 'When the digit that just appeared has been seen ' + (cfg.ccount || 5) + '+ times in the last ' + (cfg.cwin || 20) + ' ticks, trade Differs on it.'}
+          </div>
+        </section>
+      )}
+
+      {filterUI && (
         <section className="card">
           <div className="pcthead">
             <b>DIGIT FILTER</b>
@@ -661,7 +705,7 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
         </section>
       )}
 
-      {isDiff && (
+      {ladderUI && (
         <section className="card">
           <div className="pcthead">
             <b>RECOVERY LADDER</b>
@@ -732,15 +776,15 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
 
       <section className="card">
         <b>Agent settings</b>
-        {!isDiff && (
+        {!ladderUI && (
           <label>Stake list (martingale steps, comma separated)
             <input type="text" inputMode="text" disabled={running} value={cfg.stakes} onChange={(e) => setC({ stakes: e.target.value })} />
           </label>
         )}
         <div className="row">
-          <label>{isDiff ? 'After the last block loses' : 'At end of list'}
+          <label>{ladderUI ? 'After the last block loses' : 'At end of list'}
             <select disabled={running} value={cfg.end} onChange={(e) => setC({ end: e.target.value })}>
-              <option value="restart">{isDiff ? 'Restart at A' : 'Restart at first stake'}</option>
+              <option value="restart">{ladderUI ? 'Restart at A' : 'Restart at first stake'}</option>
               <option value="stop">Stop the agent</option>
             </select>
           </label>
