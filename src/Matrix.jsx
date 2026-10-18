@@ -111,6 +111,8 @@ export default function Matrix({ tradeOn, send, cur, demo, addHist, updHist }) {
   const pauseTimer = useRef(null)
   const pollAt = useRef({})
   const settled = useRef({})
+  const tb = useRef({})
+  const lastEp = useRef({})
   const sendRef = useRef(send)
   const tradeOnRef = useRef(tradeOn)
   const curRef = useRef(cur)
@@ -256,6 +258,8 @@ export default function Matrix({ tradeOn, send, cur, demo, addHist, updHist }) {
     if (netRef.current - exposure() <= -Math.abs(+c.sl)) return false
     const stake = curStake()
     const meta = { sym, stake, type: s.type, barrier: s.barrier, dur: +c.dur || 1, tag: s.tag }
+    meta.t0 = Date.now()
+    meta.trig = (digs.current[sym] || []).slice(-s.k).join('')
     const key = keyOf(s, stake)
     const map = (armedP.current[sym] = armedP.current[sym] || {})
     const a = map[key]
@@ -328,7 +332,7 @@ export default function Matrix({ tradeOn, send, cur, demo, addHist, updHist }) {
     }))
     addLog(
       (profit >= 0 ? '✅ ' : '❌ ') + o.meta.tag + ' ' + SYMN[o.meta.sym] + ' ' + TN[o.meta.type] +
-      (o.meta.barrier !== null ? ' ' + o.meta.barrier : '') + ' · stake ' + o.meta.stake +
+      (o.meta.barrier !== null ? ' ' + o.meta.barrier : '') + ' · stake ' + o.meta.stake + (o.meta.trig ? ' · signal ' + o.meta.trig : '') + (ex == null || Number.isNaN(ex) ? '' : ' · exit ' + ex) + (o.lat != null ? ' · ' + o.lat + 'ms' : '') +
       ' · ' + (profit >= 0 ? '+' : '') + profit.toFixed(2) + ' → next stake ' + curStake()
     )
     if (!live) return
@@ -340,19 +344,36 @@ export default function Matrix({ tradeOn, send, cur, demo, addHist, updHist }) {
   }
 
   // ---------- instant results from the tick feed ----------
+  const tryTick = (o, id, ep, d) => {
+    if (cfgRef.current.instant === false) return
+    if (o.noProv || !o.pt || !(o.payout > 0) || !(o.cost > 0)) return
+    if (!(Number(ep) > o.pt)) return
+    if (o.seen === 0 && Number(ep) - o.pt > 6) { o.noProv = true; return }
+    o.seen += 1
+    if (o.seen < (o.meta.dur || 1)) return
+    const win = isWin(o.meta.type, d, o.meta.barrier)
+    finish({ contract_id: id, profit: win ? o.payout - o.cost : -o.cost, exit_digit: d }, o, true)
+  }
   const settleByTick = (sym, ep, d) => {
     const now = Date.now()
     Object.keys(settled.current).forEach((k) => { if (now - settled.current[k].t > 120000) delete settled.current[k] })
+    const buf = (tb.current[sym] = (tb.current[sym] || []).slice(-12))
+    buf.push({ ep: Number(ep), d })
     Object.keys(openMap.current).forEach((id) => {
       const o = openMap.current[id]
-      if (!o || o.noProv || o.meta.sym !== sym || !o.pt || !(o.payout > 0) || !(o.cost > 0)) return
-      if (!(Number(ep) > o.pt)) return
-      if (o.seen === 0 && Number(ep) - o.pt > 6) { o.noProv = true; return }
-      o.seen += 1
-      if (o.seen < (o.meta.dur || 1)) return
-      const win = isWin(o.meta.type, d, o.meta.barrier)
-      finish({ contract_id: id, profit: win ? o.payout - o.cost : -o.cost, exit_digit: d }, o, true)
+      if (!o || o.meta.sym !== sym) return
+      tryTick(o, id, ep, d)
     })
+  }
+  // a trade that registers late: count the ticks that already arrived
+  const replayTicks = (id) => {
+    const o = openMap.current[id]
+    if (!o) return
+    const buf = (tb.current[o.meta.sym] || []).slice()
+    for (let i = 0; i < buf.length; i++) {
+      if (!openMap.current[id]) return
+      tryTick(o, id, buf[i].ep, buf[i].d)
+    }
   }
   const reconcile = (c) => {
     const id = String(c.contract_id)
@@ -471,7 +492,7 @@ export default function Matrix({ tradeOn, send, cur, demo, addHist, updHist }) {
         errs.current = 0
         const id = m.buy.contract_id
         openMap.current[String(id)] = {
-          meta: r.meta, t: Date.now(), pt: Number(m.buy.purchase_time) || 0, seen: 0,
+          meta: r.meta, t: Date.now(), pt: Number(m.buy.purchase_time) || 0, seen: 0, lat: Date.now() - (r.meta.t0 || Date.now()),
           payout: Number(m.buy.payout), cost: Number(m.buy.buy_price),
         }
         sendRef.current({ proposal_open_contract: 1, contract_id: id, subscribe: 1, req_id: ++seq.current })
@@ -481,6 +502,7 @@ export default function Matrix({ tradeOn, send, cur, demo, addHist, updHist }) {
         })
         forget(r.subId)
         rearm(r.meta.sym)
+        replayTicks(String(id))
         bump()
       }
     }
@@ -534,6 +556,8 @@ export default function Matrix({ tradeOn, send, cur, demo, addHist, updHist }) {
       }
       sock.onopen = () => {
         tickAt.current = { __open: Date.now() }
+        lastEp.current = {}
+        tb.current = {}
         digs.current = {}
         syms.forEach((sym) => {
           sock.send(JSON.stringify({ ticks_history: sym, count: 60, end: 'latest', style: 'ticks' }))
@@ -563,6 +587,9 @@ export default function Matrix({ tradeOn, send, cur, demo, addHist, updHist }) {
           const t = m.tick
           const sym = t.symbol ?? t.underlying_symbol ?? (m.echo_req && m.echo_req.ticks)
           if (!sym) return
+          const ep0 = Number(t.epoch)
+          if (ep0 && lastEp.current[sym] && ep0 <= lastEp.current[sym]) return
+          if (ep0) lastEp.current[sym] = ep0
           pip.current[sym] = t.pip_size
           const d = +t.quote.toFixed(t.pip_size).slice(-1)
           digs.current[sym] = [...(digs.current[sym] || []).slice(-59), d]
@@ -805,6 +832,12 @@ export default function Matrix({ tradeOn, send, cur, demo, addHist, updHist }) {
             <input type="number" min="0" step="0.5" disabled={running} value={cfg.tp} onChange={(e) => setC({ tp: e.target.value })} />
           </label>
         </div>
+        <label>Result speed
+          <select disabled={running} value={cfg.instant === false ? 'off' : 'on'} onChange={(e) => setC({ instant: e.target.value === 'on' })}>
+            <option value="on">Instant: settle on the exit tick, Deriv confirms</option>
+            <option value="off">Safe: wait for Deriv's result</option>
+          </select>
+        </label>
         <label>After a loss
           <select disabled={running} value={cfg.after} onChange={(e) => setC({ after: e.target.value })}>
             <option value="win">Wait for a winning digit, then the next signal</option>
