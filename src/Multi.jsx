@@ -52,6 +52,20 @@ const loadCfg = () => {
   return base
 }
 
+// a trade is finished when Deriv says sold, won or lost
+const isDone = (c) => !!c && (Boolean(c.is_sold) || c.status === 'won' || c.status === 'lost')
+const pnl = (c) => {
+  if (c.profit !== undefined && c.profit !== null && c.profit !== '') {
+    const p = Number(c.profit)
+    if (!Number.isNaN(p)) return p
+  }
+  const buy = Number(c.buy_price)
+  const pay = Number(c.payout)
+  if (c.status === 'won' && isFinite(buy) && isFinite(pay)) return pay - buy
+  if (c.status === 'lost' && isFinite(buy)) return -buy
+  return NaN
+}
+
 export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHist }) {
   const [cfg, setCfg] = useState(loadCfg)
   const [running, setRunning] = useState(false)
@@ -92,6 +106,7 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
   const paused = useRef(false)
   const pauseTimer = useRef(null)
   const pollAt = useRef({})
+  const settled = useRef({})
   const sendRef = useRef(send)
   const tradeOnRef = useRef(tradeOn)
   const curRef = useRef(cur)
@@ -303,11 +318,14 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
     })
   }
 
-  const finish = (c, o) => {
-    delete openMap.current[String(c.contract_id)]
-    const profit = Number(c.profit)
+  const finish = (c, o, prov) => {
+    const cid = String(c.contract_id)
+    delete openMap.current[cid]
+    const profit = pnl(c)
     if (Number.isNaN(profit)) return
-    const ex = typeof c.exit_tick_display_value === 'string' ? +c.exit_tick_display_value.slice(-1) : NaN
+    if (prov) settled.current[cid] = { meta: o.meta, profit, win: profit >= 0, t: Date.now() }
+    const ex = prov ? c.exit_digit
+      : typeof c.exit_tick_display_value === 'string' ? +c.exit_tick_display_value.slice(-1) : NaN
     helpers.current.updHist(c.contract_id, {
       status: profit >= 0 ? 'win' : 'loss', profit, exit: Number.isNaN(ex) ? undefined : ex,
     })
@@ -358,16 +376,61 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
     if (endStop) return stopBot('Reached the end of the stake list')
   }
 
+  // ---------- instant results from the tick feed ----------
+  const settleByTick = (sym, ep, d) => {
+    const now = Date.now()
+    Object.keys(settled.current).forEach((k) => { if (now - settled.current[k].t > 120000) delete settled.current[k] })
+    Object.keys(openMap.current).forEach((id) => {
+      const o = openMap.current[id]
+      if (!o || o.noProv || o.meta.sym !== sym || !o.pt || !(o.payout > 0) || !(o.cost > 0)) return
+      if (!(Number(ep) > o.pt)) return
+      if (o.seen === 0 && Number(ep) - o.pt > 6) { o.noProv = true; return }
+      o.seen += 1
+      if (o.seen < (o.meta.dur || 1)) return
+      const win = isWin(o.meta.type, d, o.meta.barrier)
+      finish({ contract_id: id, profit: win ? o.payout - o.cost : -o.cost, exit_digit: d }, o, true)
+    })
+  }
+  const reconcile = (c) => {
+    const id = String(c.contract_id)
+    const sm = settled.current[id]
+    if (!sm) return
+    delete settled.current[id]
+    const real = pnl(c)
+    if (Number.isNaN(real)) return
+    const flip = (real >= 0) !== sm.win
+    const ex = typeof c.exit_tick_display_value === 'string' ? +c.exit_tick_display_value.slice(-1) : NaN
+    netRef.current += real - sm.profit
+    helpers.current.updHist(id, {
+      status: real >= 0 ? 'win' : 'loss', profit: real, exit: Number.isNaN(ex) ? undefined : ex,
+    })
+    setStats((st) => ({
+      ...st,
+      net: netRef.current,
+      wins: st.wins + (flip ? (real >= 0 ? 1 : -1) : 0),
+      losses: st.losses + (flip ? (real >= 0 ? -1 : 1) : 0),
+    }))
+    if (flip) {
+      addLog('⚠ Deriv corrected ' + (sm.meta.tag || '') + ' ' + SYMN[sm.meta.sym] + ' to ' + (real >= 0 ? 'WIN ' : 'LOSS ') + real.toFixed(2))
+    }
+    if (!runRef.current) return
+    const c2 = cfgRef.current
+    if (netRef.current <= -Math.abs(+c2.sl)) stopBot('Stop loss reached')
+    else if (+c2.tp > 0 && netRef.current >= +c2.tp) stopBot('Take profit reached')
+  }
+
   // ---------- messages from the trading socket ----------
   useEffect(() => {
     const already = (e) => e.code === 'AlreadySubscribed' || /already subscribed/i.test(e.message || '')
     const h = (m) => {
       if (m.msg_type === 'proposal_open_contract') {
         const c = m.proposal_open_contract
-        if (c && c.is_sold) {
-          const o = openMap.current[String(c.contract_id)]
+        if (c && isDone(c)) {
+          const cid = String(c.contract_id)
+          const o = openMap.current[cid]
           if (m.subscription) forget(m.subscription.id)
           if (o) finish(c, o)
+          else if (settled.current[cid]) reconcile(c)
         }
         return
       }
@@ -444,16 +507,19 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
         sendBuy(r.meta, m.proposal.id, m.proposal.ask_price, m.subscription && m.subscription.id, false, r.retried)
       } else if (m.msg_type === 'buy' && r.kind === 'buy') {
         pend.current.delete(rid)
-        forget(r.subId)
-        rearm(r.meta.sym)
         errs.current = 0
         const id = m.buy.contract_id
-        openMap.current[String(id)] = { meta: r.meta, t: Date.now() }
+        openMap.current[String(id)] = {
+          meta: r.meta, t: Date.now(), pt: Number(m.buy.purchase_time) || 0, seen: 0,
+          payout: Number(m.buy.payout), cost: Number(m.buy.buy_price),
+        }
+        sendRef.current({ proposal_open_contract: 1, contract_id: id, subscribe: 1, req_id: ++seq.current })
         helpers.current.addHist({
           id, t: Date.now(), symbol: r.meta.sym, type: r.meta.type, barrier: r.meta.barrier,
           stake: Number(m.buy.buy_price), status: 'open',
         })
-        sendRef.current({ proposal_open_contract: 1, contract_id: id, subscribe: 1, req_id: ++seq.current })
+        forget(r.subId)
+        rearm(r.meta.sym)
         bump()
       }
     }
@@ -540,6 +606,7 @@ export default function Multi({ active, tradeOn, send, cur, demo, addHist, updHi
           const d = +t.quote.toFixed(t.pip_size).slice(-1)
           digs.current[sym] = [...(digs.current[sym] || []).slice(-59), d]
           tickAt.current[sym] = Date.now()
+          settleByTick(sym, t.epoch, d)
           evalTick(sym)
           bump()
         }
