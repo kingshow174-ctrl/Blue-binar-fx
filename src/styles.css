@@ -259,3 +259,9 @@ button:disabled{opacity:.5}
 .fchip.d-o{border-color:#16a34a}
 .fchip.d-s{border-color:#3b82f6}
 .fchip.d-u{border-color:#dc2626}
+
+/* menu */
+.hrow{display:flex;align-items:center;gap:10px}
+.hamb{width:42px;height:38px;padding:0;display:grid;place-items:center}
+.menuback{position:fixed;inset:0;z-index:45;background:rgba(0,0,0,.35)}
+.menu{position:fixed;right:12px;top:calc(env(safe-area-inset-top, 0px) + 56px);z-index:50;width:min(300px,calc(100vw - 24px));background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;display:grid;gap:10px;box-shadow:0 10px 30px rgba(0,0,0,.5)}

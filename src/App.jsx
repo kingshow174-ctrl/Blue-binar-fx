@@ -96,6 +96,19 @@ export default function App() {
   const [hist, setHist] = useState(loadHist)
   const [notice, setNotice] = useState('')
   const [result, setResult] = useState(null)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const topRef = useRef(null)
+  const [topH, setTopH] = useState(170)
+  useEffect(() => {
+    const el = topRef.current
+    if (!el) return
+    const set = () => setTopH(Math.ceil(el.getBoundingClientRect().height))
+    set()
+    let ro
+    if (window.ResizeObserver) { ro = new ResizeObserver(set); ro.observe(el) }
+    window.addEventListener('resize', set)
+    return () => { if (ro) ro.disconnect(); window.removeEventListener('resize', set) }
+  }, [])
   const tabsRef = useRef(null)
   useEffect(() => {
     const el = tabsRef.current && tabsRef.current.querySelector('button.on')
@@ -726,28 +739,40 @@ let rxAt = Date.now()
   const cols = '110px repeat(' + al.digits.length + ', 1fr)'
 
   return (
-    <div className={'app' + (tab === 'alerts' ? ' al' : '') + (tab === 'alerts' && tpOpen ? ' open' : '')}>
-      <div className="topbar">
+    <div className={'app' + (tab === 'alerts' ? ' al' : '') + (tab === 'alerts' && tpOpen ? ' open' : '')} style={{ paddingTop: topH + 10 }}>
+      {token && menuOpen && (
+        <>
+          <div className="menuback" onClick={() => setMenuOpen(false)} />
+          <div className="menu">
+            <b>Account</b>
+            <select value={accId} onChange={(e) => setAccId(e.target.value)}>
+              {accounts.map((a) => <option key={a.id} value={a.id}>{a.demo ? 'DEMO' : 'REAL'} · {a.id}</option>)}
+            </select>
+            <button onClick={() => { setMenuOpen(false); logout() }}>Log out</button>
+          </div>
+        </>
+      )}
+      <div className="topbar" ref={topRef}>
         <header>
           <h1>Blue Matrix <span>Trader</span></h1>
-          <div className="acct">
+          <div className="hrow">
+            <div className="acct">
             <i className={'dot ' + (token ? (tradeOn ? 'online' : 'connecting') : status)} />
             {token ? (bal ? `${bal} ${cur}` : '...') : status}
           </div>
+            {token && (
+              <button className="hamb" aria-label="Menu" onClick={() => setMenuOpen((o) => !o)}>
+                <svg width="22" height="22" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" fill="none" /></svg>
+              </button>
+            )}
+          </div>
         </header>
 
-        <section className="card">
-          {!token ? (
+        {!token && (
+          <section className="card">
             <button className="save" onClick={login}>Log in with Deriv</button>
-          ) : (
-            <div className="row">
-              <select value={accId} onChange={(e) => setAccId(e.target.value)}>
-                {accounts.map((a) => <option key={a.id} value={a.id}>{a.demo ? 'DEMO' : 'REAL'} · {a.id}</option>)}
-              </select>
-              <button onClick={logout}>Log out</button>
-            </div>
-          )}
-        </section>
+          </section>
+        )}
 
         <div className="tabs toptabs" ref={tabsRef}>
           <button className={tab === 'trader' ? 'on' : ''} onClick={() => setTab('trader')}>Trader</button>
