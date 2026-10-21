@@ -255,3 +255,7 @@ button:disabled{opacity:.5}
 .stb{text-align:left;padding:10px;display:grid;gap:3px}
 .stb b{font-size:15px}
 .stb small{font-size:12px;opacity:.85}
+/* over1 */
+.fchip.d-o{border-color:#16a34a}
+.fchip.d-s{border-color:#3b82f6}
+.fchip.d-u{border-color:#dc2626}
