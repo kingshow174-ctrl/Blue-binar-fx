@@ -119,7 +119,7 @@ const BOTS = [
 const BOTN = Object.fromEntries(BOTS.map((b) => [b.id, b]))
 const DEF = {
   bot: 'neo', syms: ['R_100'], stakes: '1, 2, 4, 8', end: 'restart', after: 'win', sl: 10, tp: 10,
-  ladder: DEF_LADDER, dmode: 'classic', ccount: 5, cwin: 20, dstake: 'list', cbase: 0.35, cmult: 11, cdiv: 4, csteps: 4, cmode: 'cum', cround: 0.05, cauto: true, dwin: 500, dspeed: 30, dfast: true, dfastN: 1, dlow: 2, dhigh: 0,
+  ladder: DEF_LADDER, dmode: 'classic', ccount: 5, cwin: 20, dstake: 'list', cbase: 0.35, cmult: 11, cdiv: 4, csteps: 4, cmode: 'cum', cround: 0.05, cauto: true, rwins: 1, dwin: 500, dspeed: 30, dfast: true, dfastN: 1, dlow: 2, dhigh: 0,
 }
 
 function MatrixRain({ active }) {
@@ -190,7 +190,12 @@ function Robot({ state }) {
 
 export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist }) {
   const [cfg, setCfg] = useState(() => {
-    try { return { ...DEF, ...JSON.parse(localStorage.bbfx_ai || '{}') } } catch { return DEF }
+    try {
+      const st = JSON.parse(localStorage.bbfx_ai || '{}')
+      const m = { ...DEF, ...st }
+      if (st.rwins === undefined && st.cdiv) m.rwins = Math.max(1, Math.round(Number(st.cdiv)) || 1)
+      return m
+    } catch { return DEF }
   })
   const [running, setRunning] = useState(false)
   const [stats, setStats] = useState({ net: 0, wins: 0, losses: 0, idx: 0, w: 0 })
@@ -248,6 +253,7 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
     setCfg((c) => ({
       ...c,
       stakes: l.map((v) => v.toFixed(2)).join(', '),
+      rwins: div,
       ladder: l.map((v, i) => ({ stake: v, runs: i === 0 ? 1 : div })),
     }))
   }
@@ -384,17 +390,28 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
       showW = w
     } else {
       const list = stakesList()
+      const need = botRef.current.id === 'diff' ? clamp(Math.round(+cfgRef.current.rwins || 1), 1, 50) : 1
       let idx = idxRef.current
-      if (profit >= 0) idx = 0
-      else {
+      let w = winsRef.current
+      if (profit >= 0) {
+        if (idx > 0) {
+          w += 1
+          if (w >= need) { note = ' · recovered, back to the first stake'; idx = 0; w = 0 }
+          else note = ' · recovery ' + w + '/' + need
+        }
+      } else {
         idx += 1
+        w = 0
         if (idx >= list.length) {
           if (cfgRef.current.end === 'stop') endStop = true
           idx = 0
-        }
+          note = ' · list finished'
+        } else note = ' · jump to stake ' + (idx + 1)
       }
       idxRef.current = idx
+      winsRef.current = w
       showIdx = idx
+      showW = w
     }
     if (profit < 0 && cfgRef.current.after !== 'now') {
       gate.current = { sym: o.meta.sym, type: o.meta.type, barrier: o.meta.barrier, ok: false }
@@ -655,7 +672,7 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
         <div className="sum">
           <div><small>Net P/L</small><b className={stats.net >= 0 ? 'win' : 'loss'}>{stats.net >= 0 ? '+' : ''}{stats.net.toFixed(2)}</b></div>
           <div><small>Win / Loss</small><b>{stats.wins} / {stats.losses}</b></div>
-          <div><small>{ladderUI ? 'Block ' + LETTERS[Math.min(stats.idx, 11)] + ' stake' : 'Next stake'}</small><b>{nextStake}</b></div>
+          <div><small>{ladderUI ? 'Block ' + LETTERS[Math.min(stats.idx, 11)] + ' stake' : isDiff ? 'Stake ' + (stats.idx + 1) + (stats.idx > 0 ? ' · ' + stats.w + '/' + clamp(Math.round(+cfg.rwins || 1), 1, 50) : '') : 'Next stake'}</small><b>{nextStake}</b></div>
         </div>
       </section>
 
@@ -885,6 +902,11 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
         {!ladderUI && (
           <label>Stake list (martingale steps, comma separated)
             <input type="text" inputMode="text" disabled={running} value={cfg.stakes} onChange={(e) => setC({ stakes: e.target.value })} />
+          </label>
+        )}
+        {!ladderUI && isDiff && (
+          <label>Wins needed at each recovery stake
+            <input type="number" min="1" max="50" disabled={running} value={cfg.rwins} onChange={(e) => setC({ rwins: e.target.value })} />
           </label>
         )}
         <div className="row">
