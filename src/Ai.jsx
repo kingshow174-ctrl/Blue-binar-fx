@@ -119,7 +119,7 @@ const BOTS = [
 const BOTN = Object.fromEntries(BOTS.map((b) => [b.id, b]))
 const DEF = {
   bot: 'neo', syms: ['R_100'], stakes: '1, 2, 4, 8', end: 'restart', after: 'win', sl: 10, tp: 10,
-  ladder: DEF_LADDER, dmode: 'classic', ccount: 5, cwin: 20, dstake: 'list', cbase: 0.35, cmult: 11, cdiv: 4, csteps: 4, cmode: 'cum', cround: 0.05, cauto: true, rwins: 1, dwin: 500, dspeed: 30, dfast: true, dfastN: 1, dlow: 2, dhigh: 0,
+  ladder: DEF_LADDER, dmode: 'classic', ccount: 5, cwin: 20, dstake: 'list', cbase: 0.35, cmult: 11, cdiv: 4, csteps: 4, cmode: 'cum', cround: 0.05, cauto: true, rstrat: 'over1c', rover: 1, runder: 2, rconf: 1, rwins: 1, dwin: 500, dspeed: 30, dfast: true, dfastN: 1, dlow: 2, dhigh: 0,
 }
 
 function MatrixRain({ active }) {
@@ -225,6 +225,7 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
   const seq = useRef(100000)
   const dog = useRef(null)
   const gate = useRef(null)
+  const rfsm = useRef({})
   const sendRef = useRef(send)
   const tradeOnRef = useRef(tradeOn)
   const curRef = useRef(cur)
@@ -267,6 +268,34 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
   const setC = (p) => setCfg((c) => ({ ...c, ...p }))
   const addLog = (t) => setLog((l) => ['[' + stamp() + '] ' + t, ...l].slice(0, 14))
   const ladderOn = () => botRef.current.id === 'diff' && cfgRef.current.dstake === 'ladder'
+  const inRecovery = () => (ladderOn() ? levelRef.current > 0 : idxRef.current > 0)
+  const recMode = () =>
+    botRef.current.id === 'diff' && !!cfgRef.current.rstrat && cfgRef.current.rstrat !== 'same' && inRecovery()
+  // signal used while recovering
+  const recoveryDecide = (sym, a, c) => {
+    if (!a.length) return null
+    const d = a[a.length - 1]
+    if (c.rstrat === 'over0') return { type: 'DIGITOVER', barrier: 0 }
+    if (c.rstrat === 'under9') return { type: 'DIGITUNDER', barrier: 9 }
+    const B = clamp(Math.round(+c.rover || 1), 0, 8)
+    const U = clamp(Math.round(+c.runder || 2), 1, 9)
+    const N = clamp(Math.round(+c.rconf || 1), 1, 5)
+    const st = rfsm.current[sym] || (rfsm.current[sym] = { phase: 'wait_under', cnt: 0 })
+    const under = d < U
+    const over = d > B
+    if (st.phase === 'wait_under') {
+      if (under) { st.phase = 'wait_over'; st.cnt = 0 }
+      return null
+    }
+    if (st.phase === 'wait_over') {
+      if (under || !over) { st.cnt = 0; return null }
+      st.cnt += 1
+      if (st.cnt >= N) { st.phase = 'run'; st.cnt = 0; return { type: 'DIGITOVER', barrier: B } }
+      return null
+    }
+    if (under) { st.phase = 'wait_over'; st.cnt = 0; return null }
+    return over ? { type: 'DIGITOVER', barrier: B } : null
+  }
 
   const stakesList = () => {
     const l = parseStakes(cfgRef.current.stakes)
@@ -306,7 +335,7 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
       return
     }
     const meta = {
-      sym, stake, type: dec.type, barrier: hasB(dec.type) ? dec.barrier : null, bot: botRef.current.name,
+      sym, stake, type: dec.type, barrier: hasB(dec.type) ? dec.barrier : null, bot: botRef.current.name + (recMode() ? ' (recovery)' : ''),
     }
     busy.current = true
     const rid = ++seq.current
@@ -343,8 +372,14 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
       setWaitTxt('')
     }
     const b = botRef.current
+    const c = cfgRef.current
+    if (recMode()) {
+      const rdec = recoveryDecide(sym, a, c)
+      if (rdec) place(sym, rdec)
+      return
+    }
     if (a.length < b.need) return
-    const dec = b.decide(a, cfgRef.current)
+    const dec = b.decide(a, c)
     if (dec) place(sym, dec)
   }
 
@@ -359,6 +394,7 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
     helpers.current.updHist(c.contract_id, {
       status: profit >= 0 ? 'win' : 'loss', profit, exit: Number.isNaN(ex) ? undefined : ex,
     })
+    const wasRec = inRecovery()
     netRef.current += profit
     let endStop = false
     let note = ''
@@ -413,6 +449,7 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
       showIdx = idx
       showW = w
     }
+    if (!wasRec && inRecovery()) rfsm.current = {}
     if (profit < 0 && cfgRef.current.after !== 'now') {
       gate.current = { sym: o.meta.sym, type: o.meta.type, barrier: o.meta.barrier, ok: false }
       setWaitTxt('Cooling down after the loss: waiting for a winning digit on ' + SYMN[o.meta.sym] + ', then the next signal')
@@ -591,6 +628,7 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
     idxRef.current = 0
     levelRef.current = 0
     winsRef.current = 0
+    rfsm.current = {}
     errs.current = 0
     busy.current = false
     openC.current = null
@@ -616,6 +654,7 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
   const wsym = cfg.syms.includes(watch) ? watch : cfg.syms[0]
   const arr = (wsym && digs.current[wsym]) || []
   const decNow = arr.length >= bot.need ? bot.decide(arr, cfg) : null
+  const recUI = isDiff && cfg.rstrat && cfg.rstrat !== 'same' && stats.idx > 0
   const info = filterUI && arr.length >= 100 ? diffInfo(arr, cfg) : null
   const lastD = arr.length ? arr[arr.length - 1] : -1
   const rstate = running ? (busy.current ? 'trade' : gate.current ? 'wait' : 'scan') : 'idle'
@@ -636,7 +675,7 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
     : shown[Math.min(stats.idx, shown.length - 1)]
   const live = running
     ? (rstate === 'trade' ? 'EXECUTING' : rstate === 'wait' ? 'COOLDOWN' : 'SCANNING') + ' ' + (SYMN[wsym] || '-') +
-      ' :: digit ' + (arr.length ? arr[arr.length - 1] : '…') + ' :: ' + (decNow ? 'SIGNAL ' + label(decNow) : 'no signal')
+      ' :: digit ' + (arr.length ? arr[arr.length - 1] : '…') + (recUI ? ' :: RECOVERY (' + cfg.rstrat + ')' : ' :: ' + (decNow ? 'SIGNAL ' + label(decNow) : 'no signal'))
     : 'AGENT OFFLINE :: choose a strategy and press START'
   const status = rstate === 'idle' ? 'STANDBY' : rstate === 'scan' ? 'SCANNING' : rstate === 'trade' ? 'EXECUTING' : 'COOLING DOWN'
 
@@ -764,6 +803,50 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
               </div>
             </>
           )}
+        </section>
+      )}
+
+      {isDiff && (
+        <section className="card">
+          <b>RECOVERY STRATEGY</b>
+          <div className="muted">After a loss, trade this instead of Differs until the recovery stake has won the number of times you set, then go back to DIFF-RADAR.</div>
+          <label>Strategy during recovery
+            <select disabled={running} value={cfg.rstrat} onChange={(e) => setC({ rstrat: e.target.value })}>
+              <option value="same">Same as main (Differs)</option>
+              <option value="over1c">Over 1 after confirmation (about 80% win chance)</option>
+              <option value="over0">Over 0 every tick (about 90% win chance)</option>
+              <option value="under9">Under 9 every tick (about 90% win chance)</option>
+            </select>
+          </label>
+          {cfg.rstrat === 'over1c' && (
+            <>
+              <div className="row">
+                <label>Trade Over
+                  <input type="number" min="0" max="8" disabled={running} value={cfg.rover} onChange={(e) => setC({ rover: e.target.value })} />
+                </label>
+                <label>Under means below
+                  <input type="number" min="1" max="9" disabled={running} value={cfg.runder} onChange={(e) => setC({ runder: e.target.value })} />
+                </label>
+              </div>
+              <label>Over digits to confirm
+                <input type="number" min="1" max="5" disabled={running} value={cfg.rconf} onChange={(e) => setC({ rconf: e.target.value })} />
+              </label>
+              <div className="muted">After an under digit, wait for the confirming over digit(s), then trade Over {cfg.rover || 1} and keep going until an under digit appears.</div>
+            </>
+          )}
+          {cfg.rstrat !== 'same' && (
+            <>
+              <div className="muted">
+                {cfg.rstrat === 'over1c'
+                  ? 'Over 1 pays about 22%, so a recovery stake of about losses × 4.5 ÷ wins needed repays a loss. Set the calculator to 4.5.'
+                  : 'This pays about 9%, like Differs, so recovery stakes stay near losses × 11 ÷ wins needed. Set the calculator to 11.'}
+              </div>
+              <button disabled={running} onClick={() => setC({ cmult: cfg.rstrat === 'over1c' ? 4.5 : 11 })}>
+                Set calculator multiplier to {cfg.rstrat === 'over1c' ? '4.5' : '11'}
+              </button>
+            </>
+          )}
+          <div className="muted">A higher win chance means a smaller profit per win. Switching contracts changes how often and how much you win or lose, not the overall odds.</div>
         </section>
       )}
 
