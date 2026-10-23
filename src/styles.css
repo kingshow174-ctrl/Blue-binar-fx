@@ -265,3 +265,6 @@ button:disabled{opacity:.5}
 .hamb{width:42px;height:38px;padding:0;display:grid;place-items:center}
 .menuback{position:fixed;inset:0;z-index:45;background:rgba(0,0,0,.35)}
 .menu{position:fixed;right:12px;top:calc(env(safe-area-inset-top, 0px) + 56px);z-index:50;width:min(300px,calc(100vw - 24px));background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;display:grid;gap:10px;box-shadow:0 10px 30px rgba(0,0,0,.5)}
+
+.scangrid{display:grid;grid-template-columns:1fr 64px 64px;gap:4px 8px;font-size:12px}
+.scangrid .best{color:#19ff7a;font-weight:700}

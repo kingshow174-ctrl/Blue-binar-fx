@@ -119,7 +119,7 @@ const BOTS = [
 const BOTN = Object.fromEntries(BOTS.map((b) => [b.id, b]))
 const DEF = {
   bot: 'neo', syms: ['R_100'], stakes: '1, 2, 4, 8', end: 'restart', after: 'win', sl: 10, tp: 10,
-  ladder: DEF_LADDER, dmode: 'classic', ccount: 5, cwin: 20, dstake: 'list', cbase: 0.35, cmult: 11, cdiv: 4, csteps: 4, cmode: 'cum', cround: 0.05, cauto: true, rstrat: 'over1c', rover: 1, runder: 2, rconf: 1, rwins: 1, dwin: 500, dspeed: 30, dfast: true, dfastN: 1, dlow: 2, dhigh: 0,
+  ladder: DEF_LADDER, dmode: 'classic', ccount: 5, cwin: 20, dstake: 'list', cbase: 0.35, cmult: 11, cdiv: 4, csteps: 4, cmode: 'cum', cround: 0.05, cauto: true, rstrat: 'over1c', rover: 1, runder: 2, rconf: 1, rpick: 'both', rwin: 200, rentry: 'confirm', rcut: 15, rwins: 1, dwin: 500, dspeed: 30, dfast: true, dfastN: 1, dlow: 2, dhigh: 0,
 }
 
 function MatrixRain({ active }) {
@@ -226,6 +226,7 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
   const dog = useRef(null)
   const gate = useRef(null)
   const rfsm = useRef({})
+  const lastBest = useRef(null)
   const sendRef = useRef(send)
   const tradeOnRef = useRef(tradeOn)
   const curRef = useRef(cur)
@@ -236,7 +237,9 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
   const dS = clamp(Math.round(+cfg.dspeed || 30), 5, 200)
   const ladderUI = isDiff && cfg.dstake === 'ladder'
   const filterUI = isDiff && cfg.dmode === 'filter'
-  const keep = filterUI ? dW + dS + 20 : 60
+  const scanOn = isDiff && cfg.rstrat === 'scan'
+  const monSyms = scanOn ? SYMS.map((x) => x[0]) : cfg.syms
+  const keep = Math.max(filterUI ? dW + dS + 20 : 60, scanOn ? clamp(Math.round(+cfg.rwin || 200), 50, 1000) + 20 : 0)
   cfgRef.current = cfg
   botRef.current = bot
   sendRef.current = send
@@ -296,6 +299,62 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
     if (under) { st.phase = 'wait_over'; st.cnt = 0; return null }
     return over ? { type: 'DIGITOVER', barrier: B } : null
   }
+  const recoveryStep = (sym, a, c) => (c.rstrat === 'scan' ? scanDecide(sym, a, c) : recoveryDecide(sym, a, c))
+  // the contract whose losing digits are rarest, over every market
+  const scanBest = (c, sticky) => {
+    const W = clamp(Math.round(+c.rwin || 200), 50, 1000)
+    const need = Math.min(W, 100)
+    let best = null
+    SYMS.forEach(([sym]) => {
+      const a = digs.current[sym] || []
+      if (a.length < need) return
+      const w = a.slice(-W)
+      const n = w.length
+      const pLow = (w.filter((d) => d <= 1).length / n) * 100
+      const pHigh = (w.filter((d) => d >= 8).length / n) * 100
+      if (c.rpick !== 'under8' && (!best || pLow < best.p)) best = { sym, type: 'DIGITOVER', barrier: 1, p: pLow }
+      if (c.rpick !== 'over1' && (!best || pHigh < best.p)) best = { sym, type: 'DIGITUNDER', barrier: 8, p: pHigh }
+    })
+    if (best && sticky && lastBest.current) {
+      const lb = lastBest.current
+      const a = digs.current[lb.sym] || []
+      const allowed = lb.type === 'DIGITOVER' ? c.rpick !== 'under8' : c.rpick !== 'over1'
+      if (allowed && a.length >= need) {
+        const w = a.slice(-W)
+        const bad = (w.filter((d) => (lb.type === 'DIGITOVER' ? d <= 1 : d >= 8)).length / w.length) * 100
+        if (bad <= best.p + 0.5) best = { ...lb, p: bad }
+      }
+    }
+    return best
+  }
+  // confirmation tracker for one market and contract
+  const stepFsm = (sym, type, d, N) => {
+    const bad = type === 'DIGITOVER' ? d <= 1 : d >= 8
+    const key = sym + type
+    const st = rfsm.current[key] || (rfsm.current[key] = { phase: 'wait_bad', cnt: 0 })
+    let go = false
+    if (st.phase === 'wait_bad') {
+      if (bad) { st.phase = 'wait_good'; st.cnt = 0 }
+    } else if (st.phase === 'wait_good') {
+      if (bad) st.cnt = 0
+      else { st.cnt += 1; if (st.cnt >= N) { st.phase = 'run'; st.cnt = 0; go = true } }
+    } else if (bad) { st.phase = 'wait_good'; st.cnt = 0 } else go = true
+    return go
+  }
+  const scanDecide = (sym, a, c) => {
+    if (!a.length) return null
+    const d = a[a.length - 1]
+    const N = clamp(Math.round(+c.rconf || 1), 1, 5)
+    const goOver = stepFsm(sym, 'DIGITOVER', d, N)
+    const goUnder = stepFsm(sym, 'DIGITUNDER', d, N)
+    const best = scanBest(c, true)
+    if (!best) return null
+    lastBest.current = best
+    if (best.sym !== sym) return null
+    const dec = { type: best.type, barrier: best.barrier }
+    if (c.rentry === 'tick') return dec
+    return (best.type === 'DIGITOVER' ? goOver : goUnder) ? dec : null
+  }
 
   const stakesList = () => {
     const l = parseStakes(cfgRef.current.stakes)
@@ -307,13 +366,20 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
       .filter((b) => isFinite(b.stake) && b.stake >= 0.35)
     return l.length ? l : DEF_LADDER
   }
-  const curStake = () => {
+  const rawStake = () => {
     if (ladderOn()) {
       const L = ladderList()
       return L[Math.min(levelRef.current, L.length - 1)].stake
     }
     const l = stakesList()
     return l[Math.min(idxRef.current, l.length - 1)]
+  }
+  const curStake = () => {
+    const v = rawStake()
+    const c = cfgRef.current
+    if (botRef.current.id !== 'diff' || c.rstrat !== 'scan' || !inRecovery()) return v
+    const cut = clamp(+c.rcut || 0, 0, 60)
+    return Math.max(0.35, Math.round(v * (1 - cut / 100) * 100) / 100)
   }
 
   const stopBot = (why) => {
@@ -359,8 +425,15 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
   }
 
   const evalTick = (sym) => {
-    if (!runRef.current || busy.current || !tradeOnRef.current) return
+    if (!runRef.current || !tradeOnRef.current) return
+    const c = cfgRef.current
     const a = digs.current[sym] || []
+    const rec = recMode()
+    const mine = c.syms.includes(sym)
+    if (busy.current) {
+      if (rec && (c.rstrat === 'scan' || mine)) recoveryStep(sym, a, c)
+      return
+    }
     const g = gate.current
     if (g) {
       if (sym !== g.sym) return
@@ -371,13 +444,14 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
       gate.current = null
       setWaitTxt('')
     }
-    const b = botRef.current
-    const c = cfgRef.current
-    if (recMode()) {
-      const rdec = recoveryDecide(sym, a, c)
+    if (rec) {
+      if (c.rstrat !== 'scan' && !mine) return
+      const rdec = recoveryStep(sym, a, c)
       if (rdec) place(sym, rdec)
       return
     }
+    if (!mine) return
+    const b = botRef.current
     if (a.length < b.need) return
     const dec = b.decide(a, c)
     if (dec) place(sym, dec)
@@ -527,7 +601,7 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
 
   // tick monitor for the selected markets
   useEffect(() => {
-    const syms = cfg.syms
+    const syms = monSyms
     if (!syms.length) return
     let dead = false
     let retry
@@ -587,7 +661,7 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
       document.removeEventListener('visibilitychange', vis)
       if (sock) sock.close()
     }
-  }, [cfg.syms.join(','), keep])
+  }, [monSyms.join(','), keep])
 
   useEffect(() => {
     if (!tradeOn && runRef.current) stopBot('Trading connection lost, agent stopped')
@@ -655,6 +729,15 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
   const arr = (wsym && digs.current[wsym]) || []
   const decNow = arr.length >= bot.need ? bot.decide(arr, cfg) : null
   const recUI = isDiff && cfg.rstrat && cfg.rstrat !== 'same' && stats.idx > 0
+  const scanW = clamp(Math.round(+cfg.rwin || 200), 50, 1000)
+  const scanNow = scanOn ? scanBest(cfg, false) : null
+  const scanRows = scanOn ? SYMS.map(([sym, nm]) => {
+    const a = digs.current[sym] || []
+    if (a.length < 50) return { sym, nm, ok: false }
+    const w = a.slice(-scanW)
+    const n = w.length
+    return { sym, nm, ok: true, lo: (w.filter((d) => d <= 1).length / n) * 100, hi: (w.filter((d) => d >= 8).length / n) * 100 }
+  }) : []
   const info = filterUI && arr.length >= 100 ? diffInfo(arr, cfg) : null
   const lastD = arr.length ? arr[arr.length - 1] : -1
   const rstate = running ? (busy.current ? 'trade' : gate.current ? 'wait' : 'scan') : 'idle'
@@ -670,9 +753,10 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
     else break
     calcCum += calcList[i]
   }
-  const nextStake = ladderUI
-    ? lad[Math.min(stats.idx, lad.length - 1)].stake
-    : shown[Math.min(stats.idx, shown.length - 1)]
+  const nextStake0 = ladderUI ? lad[Math.min(stats.idx, lad.length - 1)].stake : shown[Math.min(stats.idx, shown.length - 1)]
+  const nextStake = scanOn && stats.idx > 0
+    ? Math.max(0.35, Math.round(nextStake0 * (1 - clamp(+cfg.rcut || 0, 0, 60) / 100) * 100) / 100)
+    : nextStake0
   const live = running
     ? (rstate === 'trade' ? 'EXECUTING' : rstate === 'wait' ? 'COOLDOWN' : 'SCANNING') + ' ' + (SYMN[wsym] || '-') +
       ' :: digit ' + (arr.length ? arr[arr.length - 1] : '…') + (recUI ? ' :: RECOVERY (' + cfg.rstrat + ')' : ' :: ' + (decNow ? 'SIGNAL ' + label(decNow) : 'no signal'))
@@ -816,6 +900,7 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
               <option value="over1c">Over 1 after confirmation (about 80% win chance)</option>
               <option value="over0">Over 0 every tick (about 90% win chance)</option>
               <option value="under9">Under 9 every tick (about 90% win chance)</option>
+              <option value="scan">Over 1 / Under 8 on the best market (scans all markets)</option>
             </select>
           </label>
           {cfg.rstrat === 'over1c' && (
@@ -834,15 +919,61 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
               <div className="muted">After an under digit, wait for the confirming over digit(s), then trade Over {cfg.rover || 1} and keep going until an under digit appears.</div>
             </>
           )}
+          {cfg.rstrat === 'scan' && (
+            <>
+              <div className="row">
+                <label>Contracts to scan
+                  <select disabled={running} value={cfg.rpick} onChange={(e) => setC({ rpick: e.target.value })}>
+                    <option value="both">Over 1 and Under 8</option>
+                    <option value="over1">Over 1 only</option>
+                    <option value="under8">Under 8 only</option>
+                  </select>
+                </label>
+                <label>Percent window (ticks)
+                  <input type="number" min="50" max="1000" disabled={running} value={cfg.rwin} onChange={(e) => setC({ rwin: e.target.value })} />
+                </label>
+              </div>
+              <div className="row">
+                <label>Entry
+                  <select disabled={running} value={cfg.rentry} onChange={(e) => setC({ rentry: e.target.value })}>
+                    <option value="confirm">After confirmation</option>
+                    <option value="tick">Every tick</option>
+                  </select>
+                </label>
+                <label>Digits to confirm
+                  <input type="number" min="1" max="5" disabled={running} value={cfg.rconf} onChange={(e) => setC({ rconf: e.target.value })} />
+                </label>
+              </div>
+              <label>Make recovery stakes cheaper by (%)
+                <input type="number" min="0" max="60" step="5" disabled={running} value={cfg.rcut} onChange={(e) => setC({ rcut: e.target.value })} />
+              </label>
+              <div className="muted">
+                {scanNow
+                  ? 'Best now: ' + (SYMS.find((x) => x[0] === scanNow.sym) || [0, scanNow.sym])[1] + ' · ' + (scanNow.type === 'DIGITOVER' ? 'Over 1 (0s and 1s ' : 'Under 8 (8s and 9s ') + scanNow.p.toFixed(1) + '%)'
+                  : 'Loading ticks for all markets…'}
+              </div>
+              <div className="scangrid">
+                <b>Market</b><b>0-1 %</b><b>8-9 %</b>
+                {scanRows.map((r) => {
+                  const bestRow = scanNow && scanNow.sym === r.sym
+                  return [
+                    <span key={r.sym + 'n'} className={bestRow ? 'best' : ''}>{r.nm}</span>,
+                    <span key={r.sym + 'a'} className={bestRow && scanNow.type === 'DIGITOVER' ? 'best' : ''}>{r.ok ? r.lo.toFixed(1) : '…'}</span>,
+                    <span key={r.sym + 'b'} className={bestRow && scanNow.type === 'DIGITUNDER' ? 'best' : ''}>{r.ok ? r.hi.toFixed(1) : '…'}</span>,
+                  ]
+                })}
+              </div>
+            </>
+          )}
           {cfg.rstrat !== 'same' && (
             <>
               <div className="muted">
                 {cfg.rstrat === 'over1c'
                   ? 'Over 1 pays about 22%, so a recovery stake of about losses × 4.5 ÷ wins needed repays a loss. Set the calculator to 4.5.'
-                  : 'This pays about 9%, like Differs, so recovery stakes stay near losses × 11 ÷ wins needed. Set the calculator to 11.'}
+                  : cfg.rstrat === 'scan' ? 'Over 1 and Under 8 pay about 22%, so a recovery stake near losses × 4.5 ÷ wins needed repays a loss. Set the calculator to 4.5, then the cut above makes it a little cheaper.' : 'This pays about 9%, like Differs, so recovery stakes stay near losses × 11 ÷ wins needed. Set the calculator to 11.'}
               </div>
-              <button disabled={running} onClick={() => setC({ cmult: cfg.rstrat === 'over1c' ? 4.5 : 11 })}>
-                Set calculator multiplier to {cfg.rstrat === 'over1c' ? '4.5' : '11'}
+              <button disabled={running} onClick={() => setC({ cmult: cfg.rstrat === 'over1c' || cfg.rstrat === 'scan' ? 4.5 : 11 })}>
+                Set calculator multiplier to {cfg.rstrat === 'over1c' || cfg.rstrat === 'scan' ? '4.5' : '11'}
               </button>
             </>
           )}
