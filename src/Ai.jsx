@@ -119,7 +119,7 @@ const BOTS = [
 const BOTN = Object.fromEntries(BOTS.map((b) => [b.id, b]))
 const DEF = {
   bot: 'neo', syms: ['R_100'], stakes: '1, 2, 4, 8', end: 'restart', after: 'win', sl: 10, tp: 10,
-  ladder: DEF_LADDER, dmode: 'classic', ccount: 5, cwin: 20, dstake: 'list', cbase: 0.35, cmult: 11, cdiv: 4, csteps: 4, cmode: 'cum', cround: 0.05, cauto: true, rstrat: 'over1c', rover: 1, runder: 2, rconf: 1, rpick: 'both', rwin: 200, rentry: 'confirm', rcut: 15, rwins: 1, dwin: 500, dspeed: 30, dfast: true, dfastN: 1, dlow: 2, dhigh: 0,
+  ladder: DEF_LADDER, dmode: 'classic', ccount: 5, cwin: 20, dstake: 'list', cbase: 0.35, cmult: 11, cdiv: 4, csteps: 4, cmode: 'cum', cround: 0.05, cauto: true, rstrat: 'over1c', rover: 1, runder: 2, rconf: 1, rpick: 'both', rwin: 200, rentry: 'confirm', rcut: 15, rpat: 2, rtop: 3, rwins: 1, dwin: 500, dspeed: 30, dfast: true, dfastN: 1, dlow: 2, dhigh: 0,
 }
 
 function MatrixRain({ active }) {
@@ -247,6 +247,12 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
   curRef.current = cur
   helpers.current = { addHist, updHist }
 
+  useEffect(() => {
+    try {
+      const st = JSON.parse(localStorage.bbfx_ai || '{}')
+      if (st.rpat === undefined && st.rentry === 'confirm') setCfg((c) => ({ ...c, rentry: 'pattern' }))
+    } catch (e) { /* ignore */ }
+  }, [])
   useEffect(() => { localStorage.bbfx_ai = JSON.stringify(cfg) }, [cfg])
 
   // stake calculator: write the calculated stakes into the stake list and the ladder
@@ -300,6 +306,77 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
     return over ? { type: 'DIGITOVER', barrier: B } : null
   }
   const recoveryStep = (sym, a, c) => (c.rstrat === 'scan' ? scanDecide(sym, a, c) : recoveryDecide(sym, a, c))
+  const patTypes = (c) => (c.rpick === 'over1' ? ['DIGITOVER'] : c.rpick === 'under8' ? ['DIGITUNDER'] : ['DIGITOVER', 'DIGITUNDER'])
+  const patSt = (sym, type) => rfsm.current[sym + type + 'p'] || (rfsm.current[sym + type + 'p'] = { phase: 'idle', bad: 0, good: 0 })
+  // runs on every tick of every market: losing digits in a row, then a winning digit
+  const patternStep = (sym, a, c) => {
+    const out = {}
+    if (!a.length) return out
+    const d = a[a.length - 1]
+    const K = clamp(Math.round(+c.rpat || 2), 1, 10)
+    const N = clamp(Math.round(+c.rconf || 1), 1, 5)
+    patTypes(c).forEach((type) => {
+      const bad = type === 'DIGITOVER' ? d <= 1 : d >= 8
+      const st = patSt(sym, type)
+      let ready = false
+      if (st.phase === 'run') {
+        if (bad) { st.phase = 'idle'; st.bad = 1; st.good = 0 } else ready = true
+      } else if (bad) {
+        st.bad += 1
+        st.good = 0
+        if (st.bad >= K) st.phase = 'armed'
+      } else if (st.phase === 'armed') {
+        st.good += 1
+        if (st.good >= N) ready = true
+      } else {
+        st.bad = 0
+        st.good = 0
+      }
+      out[type] = ready
+    })
+    return out
+  }
+  // outside recovery the patterns only prime, they never trade
+  const patternExpire = (sym, ready, c) => {
+    patTypes(c).forEach((type) => {
+      if (!ready[type]) return
+      const st = patSt(sym, type)
+      st.phase = 'idle'
+      st.bad = 0
+      st.good = 0
+    })
+  }
+  const lossShare = (sym, type, c) => {
+    const W = clamp(Math.round(+c.rwin || 200), 50, 1000)
+    const a = digs.current[sym] || []
+    if (a.length < Math.min(W, 100)) return null
+    const w = a.slice(-W)
+    return (w.filter((d) => (type === 'DIGITOVER' ? d <= 1 : d >= 8)).length / w.length) * 100
+  }
+  const topOK = (sym, type, c) => {
+    const top = clamp(Math.round(+c.rtop || 10), 1, 10)
+    if (top >= 10) return true
+    const mine = lossShare(sym, type, c)
+    if (mine === null) return false
+    let better = 0
+    SYMS.forEach(([s2]) => {
+      if (s2 === sym) return
+      const p = lossShare(s2, type, c)
+      if (p !== null && p < mine) better += 1
+    })
+    return better < top
+  }
+  const patternPick = (sym, ready, c) => {
+    let dec = null
+    patTypes(c).forEach((type) => {
+      if (dec || !ready[type] || !topOK(sym, type, c)) return
+      const st = patSt(sym, type)
+      st.phase = 'run'
+      st.good = 0
+      dec = { type, barrier: type === 'DIGITOVER' ? 1 : 8 }
+    })
+    return dec
+  }
   // the contract whose losing digits are rarest, over every market
   const scanBest = (c, sticky) => {
     const W = clamp(Math.round(+c.rwin || 200), 50, 1000)
@@ -430,8 +507,14 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
     const a = digs.current[sym] || []
     const rec = recMode()
     const mine = c.syms.includes(sym)
+    const pat = botRef.current.id === 'diff' && c.rstrat === 'scan' && c.rentry === 'pattern'
+    let ready = null
+    if (pat) {
+      ready = patternStep(sym, a, c)
+      if (!rec) patternExpire(sym, ready, c)
+    }
     if (busy.current) {
-      if (rec && (c.rstrat === 'scan' || mine)) recoveryStep(sym, a, c)
+      if (rec && !pat && (c.rstrat === 'scan' || mine)) recoveryStep(sym, a, c)
       return
     }
     const g = gate.current
@@ -445,6 +528,11 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
       setWaitTxt('')
     }
     if (rec) {
+      if (pat) {
+        const pd = patternPick(sym, ready, c)
+        if (pd) place(sym, pd)
+        return
+      }
       if (c.rstrat !== 'scan' && !mine) return
       const rdec = recoveryStep(sym, a, c)
       if (rdec) place(sym, rdec)
@@ -523,7 +611,11 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
       showIdx = idx
       showW = w
     }
-    if (!wasRec && inRecovery()) rfsm.current = {}
+    if (!wasRec && inRecovery()) {
+      const keepP = {}
+      Object.keys(rfsm.current).forEach((k) => { if (k.endsWith('p')) keepP[k] = rfsm.current[k] })
+      rfsm.current = keepP
+    }
     if (profit < 0 && cfgRef.current.after !== 'now') {
       gate.current = { sym: o.meta.sym, type: o.meta.type, barrier: o.meta.barrier, ok: false }
       setWaitTxt('Cooling down after the loss: waiting for a winning digit on ' + SYMN[o.meta.sym] + ', then the next signal')
@@ -730,6 +822,9 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
   const decNow = arr.length >= bot.need ? bot.decide(arr, cfg) : null
   const recUI = isDiff && cfg.rstrat && cfg.rstrat !== 'same' && stats.idx > 0
   const scanW = clamp(Math.round(+cfg.rwin || 200), 50, 1000)
+  const armedNames = scanOn
+    ? SYMS.filter(([sym]) => ['DIGITOVER', 'DIGITUNDER'].some((t) => { const q = rfsm.current[sym + t + 'p']; return q && q.phase === 'armed' })).map((x) => x[1])
+    : []
   const scanNow = scanOn ? scanBest(cfg, false) : null
   const scanRows = scanOn ? SYMS.map(([sym, nm]) => {
     const a = digs.current[sym] || []
@@ -936,6 +1031,7 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
               <div className="row">
                 <label>Entry
                   <select disabled={running} value={cfg.rentry} onChange={(e) => setC({ rentry: e.target.value })}>
+                    <option value="pattern">Pattern: losing digits in a row, then a winning digit</option>
                     <option value="confirm">After confirmation</option>
                     <option value="tick">Every tick</option>
                   </select>
@@ -944,6 +1040,22 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
                   <input type="number" min="1" max="5" disabled={running} value={cfg.rconf} onChange={(e) => setC({ rconf: e.target.value })} />
                 </label>
               </div>
+              {cfg.rentry === 'pattern' && (
+                <>
+                  <div className="row">
+                    <label>Losing digits in a row (min)
+                      <input type="number" min="1" max="10" disabled={running} value={cfg.rpat} onChange={(e) => setC({ rpat: e.target.value })} />
+                    </label>
+                    <label>Only the N lowest-% markets (10 = all)
+                      <input type="number" min="1" max="10" disabled={running} value={cfg.rtop} onChange={(e) => setC({ rtop: e.target.value })} />
+                    </label>
+                  </div>
+                  <div className="muted">
+                    Enter when a market shows {cfg.rpat || 2}+ losing digits in a row (0 or 1 for Over 1, 8 or 9 for Under 8) and then a winning digit. It keeps trading until a losing digit appears.
+                  </div>
+                  <div className="muted">Armed now: {armedNames.length ? armedNames.join(', ') : 'none yet'}</div>
+                </>
+              )}
               <label>Make recovery stakes cheaper by (%)
                 <input type="number" min="0" max="60" step="5" disabled={running} value={cfg.rcut} onChange={(e) => setC({ rcut: e.target.value })} />
               </label>
