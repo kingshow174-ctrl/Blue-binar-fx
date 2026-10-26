@@ -119,7 +119,7 @@ const BOTS = [
 const BOTN = Object.fromEntries(BOTS.map((b) => [b.id, b]))
 const DEF = {
   bot: 'neo', syms: ['R_100'], stakes: '1, 2, 4, 8', end: 'restart', after: 'win', sl: 10, tp: 10,
-  ladder: DEF_LADDER, dmode: 'classic', ccount: 5, cwin: 20, dstake: 'list', cbase: 0.35, cmult: 11, cdiv: 4, csteps: 4, cmode: 'cum', cround: 0.05, cauto: true, rstrat: 'over1c', rover: 1, runder: 2, rconf: 1, rpick: 'both', rwin: 200, rentry: 'confirm', rcut: 15, rpat: 2, rtop: 3, rwins: 1, dwin: 500, dspeed: 30, dfast: true, dfastN: 1, dlow: 2, dhigh: 0,
+  ladder: DEF_LADDER, dmode: 'classic', ccount: 5, cwin: 20, dstake: 'list', cbase: 0.35, cmult: 11, cdiv: 4, csteps: 4, cmode: 'cum', cround: 0.05, cauto: true, rstrat: 'over1c', rover: 1, runder: 2, rconf: 1, rpick: 'both', rwin: 1000, rentry: 'confirm', rcut: 15, rpat: 2, rtop: 10, rlock: true, rwins: 1, dwin: 500, dspeed: 30, dfast: true, dfastN: 1, dlow: 2, dhigh: 0,
 }
 
 function MatrixRain({ active }) {
@@ -227,6 +227,7 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
   const gate = useRef(null)
   const rfsm = useRef({})
   const lastBest = useRef(null)
+  const recLock = useRef(null)
   const sendRef = useRef(send)
   const tradeOnRef = useRef(tradeOn)
   const curRef = useRef(cur)
@@ -251,6 +252,12 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
     try {
       const st = JSON.parse(localStorage.bbfx_ai || '{}')
       if (st.rpat === undefined && st.rentry === 'confirm') setCfg((c) => ({ ...c, rentry: 'pattern' }))
+    } catch (e) { /* ignore */ }
+  }, [])
+  useEffect(() => {
+    try {
+      const st = JSON.parse(localStorage.bbfx_ai || '{}')
+      if (st.rlock === undefined) setCfg((c) => ({ ...c, rwin: 1000, rlock: true, rtop: 10 }))
     } catch (e) { /* ignore */ }
   }, [])
   useEffect(() => { localStorage.bbfx_ai = JSON.stringify(cfg) }, [cfg])
@@ -366,13 +373,35 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
     })
     return better < top
   }
+  // the armed market with the clearly lowest losing-digit % gets the entry
+  const lowestArmedOK = (sym, type, c) => {
+    const mine = lossShare(sym, type, c)
+    if (mine === null) return false
+    let ok = true
+    SYMS.forEach(([s2]) => {
+      patTypes(c).forEach((t2) => {
+        if (s2 === sym && t2 === type) return
+        const q = rfsm.current[s2 + t2 + 'p']
+        if (!q || q.phase !== 'armed') return
+        const p = lossShare(s2, t2, c)
+        if (p !== null && p < mine - 1) ok = false
+      })
+    })
+    return ok
+  }
   const patternPick = (sym, ready, c) => {
+    const lockOn = c.rlock !== false
+    if (lockOn && recLock.current && Date.now() - recLock.current.t > 300000) recLock.current = null
+    const held = recLock.current
+    if (lockOn && held && held.sym !== sym) return null
     let dec = null
     patTypes(c).forEach((type) => {
-      if (dec || !ready[type] || !topOK(sym, type, c)) return
+      if (dec || !ready[type]) return
+      if (!(lockOn && held) && !lowestArmedOK(sym, type, c)) return
       const st = patSt(sym, type)
       st.phase = 'run'
       st.good = 0
+      if (lockOn) recLock.current = { sym, t: Date.now() }
       dec = { type, barrier: type === 'DIGITOVER' ? 1 : 8 }
     })
     return dec
@@ -506,6 +535,7 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
     const c = cfgRef.current
     const a = digs.current[sym] || []
     const rec = recMode()
+    if (!rec) recLock.current = null
     const mine = c.syms.includes(sym)
     const pat = botRef.current.id === 'diff' && c.rstrat === 'scan' && c.rentry === 'pattern'
     let ready = null
@@ -822,6 +852,7 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
   const decNow = arr.length >= bot.need ? bot.decide(arr, cfg) : null
   const recUI = isDiff && cfg.rstrat && cfg.rstrat !== 'same' && stats.idx > 0
   const scanW = clamp(Math.round(+cfg.rwin || 200), 50, 1000)
+  const lockName = recLock.current ? (SYMS.find((x) => x[0] === recLock.current.sym) || [0, recLock.current.sym])[1] : null
   const armedNames = scanOn
     ? SYMS.filter(([sym]) => ['DIGITOVER', 'DIGITUNDER'].some((t) => { const q = rfsm.current[sym + t + 'p']; return q && q.phase === 'armed' })).map((x) => x[1])
     : []
@@ -1046,14 +1077,18 @@ export default function Ai({ active, tradeOn, send, cur, demo, addHist, updHist 
                     <label>Losing digits in a row (min)
                       <input type="number" min="1" max="10" disabled={running} value={cfg.rpat} onChange={(e) => setC({ rpat: e.target.value })} />
                     </label>
-                    <label>Only the N lowest-% markets (10 = all)
-                      <input type="number" min="1" max="10" disabled={running} value={cfg.rtop} onChange={(e) => setC({ rtop: e.target.value })} />
+                    <label>Stay on the first market until recovered
+                      <select disabled={running} value={cfg.rlock === false ? 'off' : 'on'} onChange={(e) => setC({ rlock: e.target.value === 'on' })}>
+                        <option value="on">On</option>
+                        <option value="off">Off (pick again each entry)</option>
+                      </select>
                     </label>
                   </div>
                   <div className="muted">
-                    Enter when a market shows {cfg.rpat || 2}+ losing digits in a row (0 or 1 for Over 1, 8 or 9 for Under 8) and then a winning digit. It keeps trading until a losing digit appears.
+                    Enter when a market shows {cfg.rpat || 2}+ losing digits in a row (0 or 1 for Over 1, 8 or 9 for Under 8) and then a winning digit. It keeps trading until a losing digit appears. Among armed markets it picks the lowest losing-digit %, then stays on that market until the recovery is complete.
                   </div>
                   <div className="muted">Armed now: {armedNames.length ? armedNames.join(', ') : 'none yet'}</div>
+                  <div className="muted">Locked on: {lockName || 'not locked'}</div>
                 </>
               )}
               <label>Make recovery stakes cheaper by (%)
