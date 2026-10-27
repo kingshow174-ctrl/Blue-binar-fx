@@ -4,6 +4,7 @@ import Multi from './Multi.jsx'
 import Ai from './Ai.jsx'
 import Matrix from './Matrix.jsx'
 import Over1 from './Over1.jsx'
+import Differ from './Differ.jsx'
 import { bus } from './bus.js'
 
 const APP_ID = import.meta.env.VITE_DERIV_CLIENT_ID
@@ -786,6 +787,7 @@ let rxAt = Date.now()
           <button className={'aib' + (tab === 'ai' ? ' on' : '')} onClick={() => setTab('ai')}>🤖 AI Strategies</button>
           <button className={tab === 'matrix' ? 'on' : ''} onClick={() => setTab('matrix')}>Matrix</button>
           <button className={tab === 'over1' ? 'on' : ''} onClick={() => setTab('over1')}>Over 1</button>
+          <button className={tab === 'differ' ? 'on' : ''} onClick={() => setTab('differ')}>Differ</button>
         </div>
       </div>
 
@@ -970,6 +972,17 @@ let rxAt = Date.now()
           )}
         </>
       )}
+
+      <div className="multiwrap" style={{ display: tab === 'differ' ? 'grid' : 'none' }}>
+        <Differ
+          tradeOn={tradeOn}
+          send={trdSend}
+          cur={cur}
+          demo={acct ? acct.demo : true}
+          addHist={(e) => setHist((h) => [e, ...h].slice(0, 100))}
+          updHist={(id, p) => setHist((h) => h.map((x) => (String(x.id) === String(id) ? { ...x, ...p } : x)))}
+        />
+      </div>
 
       <div className="multiwrap" style={{ display: tab === 'over1' ? 'grid' : 'none' }}>
         <Over1
