@@ -106,6 +106,9 @@ export default function Matrix({ tradeOn, send, cur, demo, addHist, updHist }) {
   const gate = useRef(null)
   const raf = useRef(0)
   const holds = useRef(0)
+  const lastProp = useRef(0)
+  const rateUntil = useRef(0)
+  const skips = useRef({ busy: 0, gate: 0, risk: 0, rate: 0 })
   const tickAt = useRef({})
   const paused = useRef(false)
   const pauseTimer = useRef(null)
@@ -188,11 +191,18 @@ export default function Matrix({ tradeOn, send, cur, demo, addHist, updHist }) {
       if (!uniq.has(k)) uniq.set(k, { s, stake, k })
     }))
     let arr = [...uniq.values()]
-    if (arr.length * cfgRef.current.syms.length > 24) {
+    if (arr.length * cfgRef.current.syms.length > 8) {
       const cs = curStake()
       arr = arr.filter((x) => x.stake === cs)
     }
     return arr
+  }
+  const queueArm = (p) => {
+    const now = Date.now()
+    const at = Math.max(now, lastProp.current + 400)
+    lastProp.current = at
+    if (at <= now) sendRef.current(p)
+    else setTimeout(() => { if (runRef.current && tradeOnRef.current) sendRef.current(p) }, at - now)
   }
   const armOne = (sym, s, stake, key) => {
     const rid = ++seq.current
@@ -204,10 +214,11 @@ export default function Matrix({ tradeOn, send, cur, demo, addHist, updHist }) {
       duration_unit: 't', underlying_symbol: sym,
     }
     if (s.barrier !== null) p.barrier = String(s.barrier)
-    sendRef.current(p)
+    queueArm(p)
   }
   const ensureArmed = (sym) => {
     if (!runRef.current || !tradeOnRef.current) return
+    if (Date.now() < rateUntil.current) return
     const want = wantList()
     const map = (armedP.current[sym] = armedP.current[sym] || {})
     const wantKeys = new Set(want.map((w) => w.k))
@@ -254,8 +265,9 @@ export default function Matrix({ tradeOn, send, cur, demo, addHist, updHist }) {
   const fire = (sym, s) => {
     const c = cfgRef.current
     const maxOpen = parseStakes(c.stakes).length > 1 ? 1 : Math.max(1, Math.min(5, +c.maxOpen || 1))
-    if (slots() >= maxOpen) return false
-    if (netRef.current - exposure() <= -Math.abs(+c.sl)) return false
+    if (slots() >= maxOpen) { skips.current.busy += 1; return false }
+    if (Date.now() < rateUntil.current) { skips.current.rate += 1; return false }
+    if (netRef.current - exposure() <= -Math.abs(+c.sl)) { skips.current.risk += 1; return false }
     const stake = curStake()
     const meta = { sym, stake, type: s.type, barrier: s.barrier, dur: +c.dur || 1, tag: s.tag }
     meta.t0 = Date.now()
@@ -280,9 +292,9 @@ export default function Matrix({ tradeOn, send, cur, demo, addHist, updHist }) {
     const d = a[a.length - 1]
     const g = gate.current
     if (g) {
-      if (sym !== g.sym) return
-      if (!g.ok) {
-        if (isWin(g.type, d, g.barrier)) g.ok = true
+      if (sym !== g.sym || !g.ok) {
+        if (strats().some((st) => sigMet(st, a))) skips.current.gate += 1
+        if (sym === g.sym && isWin(g.type, d, g.barrier)) g.ok = true
         return
       }
       gate.current = null
@@ -406,6 +418,11 @@ export default function Matrix({ tradeOn, send, cur, demo, addHist, updHist }) {
   // ---------- messages from the trading socket ----------
   useEffect(() => {
     const already = (e) => e.code === 'AlreadySubscribed' || /already subscribed/i.test(e.message || '')
+    const isRate = (e) => e.code === 'RateLimit' || /rate limit/i.test(e.message || '')
+    const slowDown = () => {
+      if (Date.now() > rateUntil.current) addLog('Deriv rate limit, slowing down for a few seconds')
+      rateUntil.current = Date.now() + 5000
+    }
     const h = (m) => {
       if (m.msg_type === 'proposal_open_contract') {
         const c = m.proposal_open_contract
@@ -425,6 +442,7 @@ export default function Matrix({ tradeOn, send, cur, demo, addHist, updHist }) {
       if (ar) {
         const slot = ar.sym + '|' + ar.key
         if (m.error) {
+          if (isRate(m.error)) { slowDown(); return }
           if (already(m.error)) {
             const n = (armTries.current[slot] || 0) + 1
             armTries.current[slot] = n
@@ -455,6 +473,11 @@ export default function Matrix({ tradeOn, send, cur, demo, addHist, updHist }) {
       const r = reqs.current[rid]
       if (!r) return
       if (m.error) {
+        if (isRate(m.error)) {
+          pend.current.delete(rid)
+          slowDown()
+          return
+        }
         if (r.kind === 'proposal' && already(m.error) && (r.meta.tries || 0) < 4) {
           pend.current.delete(rid)
           holds.current += 1
@@ -501,7 +524,7 @@ export default function Matrix({ tradeOn, send, cur, demo, addHist, updHist }) {
           stake: Number(m.buy.buy_price), status: 'open',
         })
         forget(r.subId)
-        rearm(r.meta.sym)
+        setTimeout(() => rearm(r.meta.sym), 350)
         replayTicks(String(id))
         bump()
       }
@@ -682,6 +705,7 @@ export default function Matrix({ tradeOn, send, cur, demo, addHist, updHist }) {
     netRef.current = 0
     idxRef.current = 0
     errs.current = 0
+    skips.current = { busy: 0, gate: 0, risk: 0, rate: 0 }
     pend.current.clear()
     armedP.current = {}
     armLatest.current = {}
@@ -752,6 +776,11 @@ export default function Matrix({ tradeOn, send, cur, demo, addHist, updHist }) {
           <div><small>Next stake</small><b>{nextStake}</b></div>
         </div>
         {running && <div className="muted">Open trades: {openNow} / {maxO}</div>}
+        {running && (
+          <div className="muted">
+            Skipped signals · trade open: {skips.current.busy} · wait after loss: {skips.current.gate} · risk limit: {skips.current.risk} · rate limit: {skips.current.rate}
+          </div>
+        )}
       </section>
 
       <section className="card">
