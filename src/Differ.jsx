@@ -94,6 +94,8 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
   const lastEp = useRef({})
   const pt = useRef({})
   const recLock = useRef(null)
+  const lastProp = useRef(0)
+  const rateUntil = useRef(0)
   const sendRef = useRef(send)
   const tradeOnRef = useRef(tradeOn)
   const curRef = useRef(cur)
@@ -185,11 +187,8 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
     const stakes = neededStakes()
     const ALL = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
     const digitsFor = (sym) => {
-      if (c.mode === 'every') return c.target === 'fixed' ? [clamp(Math.round(+c.fixed || 0), 0, 9)] : ALL
-      if (inRecovery()) {
-        const lk = recLock.current
-        return c.lock === false || (lk && lk.sym === sym) ? ALL : []
-      }
+      if (c.mode === 'every') return c.target === 'fixed' ? [clamp(Math.round(+c.fixed || 0), 0, 9)] : []
+      if (inRecovery()) return []
       const st = pt.current[sym]
       return st && st.armed ? [st.x] : []
     }
@@ -200,11 +199,18 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
     if (out.length > 50) out = out.filter((x) => x.stake === stakes[0])
     return out.slice(0, 50)
   }
+  const queueArm = (p) => {
+    const now = Date.now()
+    const at = Math.max(now, lastProp.current + 400)
+    lastProp.current = at
+    if (at <= now) sendRef.current(p)
+    else setTimeout(() => { if (runRef.current && tradeOnRef.current) sendRef.current(p) }, at - now)
+  }
   const armOne = (sym, barrier, stake, key) => {
     const rid = ++seq.current
     armReq.current[rid] = { sym, key }
     armLatest.current[sym + '|' + key] = rid
-    sendRef.current({
+    queueArm({
       proposal: 1, subscribe: 1, req_id: rid, amount: stake, basis: 'stake',
       contract_type: 'DIGITDIFF', currency: curRef.current || 'USD', duration: +cfgRef.current.dur || 1,
       duration_unit: 't', underlying_symbol: sym, barrier: String(barrier),
@@ -212,6 +218,7 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
   }
   const ensureArmed = (sym) => {
     if (!runRef.current || !tradeOnRef.current) return
+    if (Date.now() < rateUntil.current) return
     const want = wantList().filter((w) => w.sym === sym)
     const map = (armedP.current[sym] = armedP.current[sym] || {})
     const wantKeys = new Set(want.map((w) => w.k))
@@ -256,6 +263,7 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
   const fire = (sym, barrier) => {
     const c = cfgRef.current
     if (slots() >= 1) return false
+    if (Date.now() < rateUntil.current) return false
     const stake = curStake()
     if (netRef.current - stake <= -Math.abs(+c.sl)) {
       stopBot('Next stake ' + stake + ' could pass your stop loss, stopped')
@@ -445,6 +453,11 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
   // ---------- messages from the trading socket ----------
   useEffect(() => {
     const already = (e) => e.code === 'AlreadySubscribed' || /already subscribed/i.test(e.message || '')
+    const isRate = (e) => e.code === 'RateLimit' || /rate limit/i.test(e.message || '')
+    const slowDown = () => {
+      if (Date.now() > rateUntil.current) addLog('Deriv rate limit, slowing down for a few seconds')
+      rateUntil.current = Date.now() + 5000
+    }
     const h = (m) => {
       if (m.msg_type === 'proposal_open_contract') {
         const c = m.proposal_open_contract
@@ -464,6 +477,7 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
       if (ar) {
         const slot = ar.sym + '|' + ar.key
         if (m.error) {
+          if (isRate(m.error)) { slowDown(); return }
           if (already(m.error)) {
             const n = (armTries.current[slot] || 0) + 1
             armTries.current[slot] = n
@@ -494,6 +508,11 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
       const r = reqs.current[rid]
       if (!r) return
       if (m.error) {
+        if (isRate(m.error)) {
+          pend.current.delete(rid)
+          slowDown()
+          return
+        }
         if (r.kind === 'proposal' && already(m.error) && (r.meta.tries || 0) < 4) {
           pend.current.delete(rid)
           holds.current += 1
