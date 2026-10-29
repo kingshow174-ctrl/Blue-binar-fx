@@ -5,6 +5,7 @@ import Ai from './Ai.jsx'
 import Matrix from './Matrix.jsx'
 import Over1 from './Over1.jsx'
 import Differ from './Differ.jsx'
+import Scanner from './Scanner.jsx'
 import { bus } from './bus.js'
 
 const APP_ID = import.meta.env.VITE_DERIV_CLIENT_ID
@@ -788,6 +789,7 @@ let rxAt = Date.now()
           <button className={tab === 'matrix' ? 'on' : ''} onClick={() => setTab('matrix')}>Matrix</button>
           <button className={tab === 'over1' ? 'on' : ''} onClick={() => setTab('over1')}>Over 1</button>
           <button className={tab === 'differ' ? 'on' : ''} onClick={() => setTab('differ')}>Differ</button>
+          <button className={tab === 'scanner' ? 'on' : ''} onClick={() => setTab('scanner')}>Scanner</button>
         </div>
       </div>
 
@@ -972,6 +974,18 @@ let rxAt = Date.now()
           )}
         </>
       )}
+
+      <div className="multiwrap" style={{ display: tab === 'scanner' ? 'grid' : 'none' }}>
+        <Scanner
+          active={tab === 'scanner'}
+          tradeOn={tradeOn}
+          send={trdSend}
+          cur={cur}
+          demo={acct ? acct.demo : true}
+          addHist={(e) => setHist((h) => [e, ...h].slice(0, 100))}
+          updHist={(id, p) => setHist((h) => h.map((x) => (String(x.id) === String(id) ? { ...x, ...p } : x)))}
+        />
+      </div>
 
       <div className="multiwrap" style={{ display: tab === 'differ' ? 'grid' : 'none' }}>
         <Differ
