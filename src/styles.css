@@ -335,3 +335,14 @@ button:disabled{opacity:.5}
 .sw:disabled{opacity:.6}
 .msc button.smallbtn{padding:8px 14px;font-size:12px}
 @media (max-width:380px){.msc-hero{grid-template-columns:1fr;justify-items:center;text-align:center}.hrow{justify-content:center}}
+
+/* msc2 */
+.checks{display:grid;gap:8px}
+.chk{display:grid;grid-template-columns:26px 1fr;gap:10px;align-items:start;padding:8px 10px;border-radius:12px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.06)}
+.chk i{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;font-style:normal;font-weight:800;font-size:13px}
+.chk.y i{background:rgba(25,255,122,.16);color:#7dffb8}
+.chk.n i{background:rgba(255,90,110,.16);color:#ff9aa8}
+.chk div{display:grid;gap:2px}
+.chk b{font-size:13px;color:#e9f1ff}
+.chk small{font-size:11px;color:#8fb0e8}
+.aibox{background:rgba(124,92,255,.1);border:1px solid rgba(124,92,255,.35);color:#e1d9ff;padding:10px 12px;border-radius:12px;font-size:13px;line-height:1.5;white-space:pre-wrap}

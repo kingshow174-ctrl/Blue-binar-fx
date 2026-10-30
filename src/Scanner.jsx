@@ -31,8 +31,8 @@ const winOf = (type, d, b) =>
 const nameOf = (c) => TN[c.type] + (c.barrier !== null && c.barrier !== undefined ? ' ' + c.barrier : '')
 
 const DEF = {
-  fam: 'md', kind: 'both', mkt: 'any', digit: 'any', model: 'ens', win: 1000,
-  auto: false, stake: 1, dur: 1, minEdge: 1, zmode: 'normal', cool: 8, sl: 10, tp: 10, instant: true,
+  fam: 'md', kind: 'both', mkt: 'any', digit: 'any', model: 'ctx', ctxk: 3, win: 1000,
+  auto: false, stake: 1, dur: 1, minEdge: 1, zmode: 'analyst', cool: 8, sl: 10, tp: 10, instant: true,
 }
 const loadCfg = () => {
   try { return { ...DEF, ...JSON.parse(localStorage.bbfx_scanner || '{}') } } catch (e) { return DEF }
@@ -162,11 +162,37 @@ const analyseMarket = (w, c) => {
   const useM = c.model === 'markov'
   const trials = useM ? m : n
   const obsArr = useM ? tr : cnt
+  const K = clamp(Math.round(+c.ctxk || 3), 1, 4)
+  const mask = (1 << K) - 1
   const add = (type, barrier, set, base) => {
-    const est = set.reduce((a, d) => a + p[d], 0)
+    const inSet = Array(10).fill(false)
+    set.forEach((d) => { inSet[d] = true })
+    let cur = 0
+    for (let j = n - K; j < n; j++) cur = ((cur << 1) | (inSet[w[j]] ? 1 : 0)) & mask
+    const cut = Math.floor(n * 0.7)
+    let nTr = 0
+    let wTr = 0
+    let nTe = 0
+    let wTe = 0
+    let cx = 0
+    for (let i = 0; i < n - 1; i++) {
+      cx = ((cx << 1) | (inSet[w[i]] ? 1 : 0)) & mask
+      if (i < K - 1 || cx !== cur) continue
+      const win = inSet[w[i + 1]] ? 1 : 0
+      if (i + 1 < cut) { nTr += 1; wTr += win } else { nTe += 1; wTe += win }
+    }
+    const nC = nTr + nTe
+    const wC = wTr + wTe
+    const pCtx = (wC + base * 30) / (nC + 30)
+    const zCtx = nC > 0 ? (wC - nC * base) / Math.sqrt(nC * base * (1 - base)) : 0
+    const zTe = nTe > 0 ? (wTe - nTe * base) / Math.sqrt(nTe * base * (1 - base)) : 0
+    const pTr = nTr > 0 ? wTr / nTr : base
+    const pTe = nTe > 0 ? wTe / nTe : base
+    let est = set.reduce((a, d) => a + p[d], 0)
     const obs = set.reduce((a, d) => a + obsArr[d], 0)
-    const z = trials > 0 ? (obs - trials * base) / Math.sqrt(trials * base * (1 - base)) : 0
-    cands.push({ type, barrier, est, base, edge: (est - base) * 100, z })
+    let z = trials > 0 ? (obs - trials * base) / Math.sqrt(trials * base * (1 - base)) : 0
+    if (c.model === 'ctx') { est = pCtx; z = zCtx }
+    cands.push({ type, barrier, est, base, edge: (est - base) * 100, z, ctx: { K, nC, wC, pCtx, zCtx, nTr, pTr, nTe, pTe, zTe } })
   }
   const dsel = c.digit === 'any' ? null : +c.digit
   if (c.fam === 'md') {
@@ -188,6 +214,29 @@ const analyseMarket = (w, c) => {
   return { n, cnt, share, zd, p, chi, chiPv, mkP, cands, last: L }
 }
 
+const payKey = (type, barrier) => (type === 'DIGITOVER' || type === 'DIGITUNDER' ? type + barrier : type)
+// the analyst: every check must pass before it says TRADE
+const verdictOf = (best, zc) => {
+  if (!best || !best.ctx) return null
+  const x = best.ctx
+  const checks = []
+  checks.push([x.nC >= 40, 'Enough examples of this situation',
+    x.nC + ' matching cases after the last ' + x.K + ' digit' + (x.K > 1 ? 's' : '') + ' (need 40+)'])
+  checks.push([x.zCtx >= zc, 'Stronger than luck across every option scanned',
+    'z ' + x.zCtx.toFixed(2) + ' vs ' + zc.toFixed(2) + ' needed'])
+  const heldOk = x.nTe >= 20 && x.zTe >= 1 && x.pTe > best.base
+  checks.push([heldOk, 'Held up on data it was not fitted on',
+    x.nTe >= 20
+      ? 'held-out win rate ' + (x.pTe * 100).toFixed(1) + '% over ' + x.nTe + ' cases (baseline ' + (best.base * 100).toFixed(0) + '%)'
+      : 'only ' + x.nTe + ' held-out cases (need 20+)'])
+  if (best.ratio) {
+    checks.push([best.ev > 0, 'Pays more than it costs', 'expected return ' + best.ev.toFixed(1) + '% per 1 staked at the real payout'])
+  } else {
+    checks.push([false, 'Real payout checked', 'tap Check real payouts (log in first)'])
+  }
+  return { checks, go: checks.every((c) => c[0]) }
+}
+
 export default function Scanner({ active, tradeOn, send, cur, demo, addHist, updHist }) {
   const [cfg, setCfg] = useState(loadCfg)
   const [running, setRunning] = useState(false)
@@ -197,6 +246,9 @@ export default function Scanner({ active, tradeOn, send, cur, demo, addHist, upd
   const [watch, setWatch] = useState('')
   const [an, setAn] = useState(null)
   const [aboutOpen, setAboutOpen] = useState(false)
+  const [payMsg, setPayMsg] = useState('')
+  const [aiText, setAiText] = useState('')
+  const [aiBusy, setAiBusy] = useState(false)
   const [, force] = useState(0)
 
   const cfgRef = useRef(cfg)
@@ -219,6 +271,7 @@ export default function Scanner({ active, tradeOn, send, cur, demo, addHist, upd
   const tb = useRef({})
   const lastEp = useRef({})
   const lastTradeAt = useRef(0)
+  const payRef = useRef({})
   const rateUntil = useRef(0)
   const sendRef = useRef(send)
   const tradeOnRef = useRef(tradeOn)
@@ -233,6 +286,12 @@ export default function Scanner({ active, tradeOn, send, cur, demo, addHist, upd
   curRef.current = cur
   helpers.current = { addHist, updHist }
 
+  useEffect(() => {
+    try {
+      const st = JSON.parse(localStorage.bbfx_scanner || '{}')
+      if (st.ctxk === undefined) setCfg((c) => ({ ...c, model: 'ctx', ctxk: 3, zmode: 'analyst' }))
+    } catch (e) { /* ignore */ }
+  }, [])
   useEffect(() => { localStorage.bbfx_scanner = JSON.stringify(cfg) }, [cfg])
   const setC = (p) => setCfg((c) => ({ ...c, ...p }))
   const setFam = (fam) => setC({ fam, kind: 'both', digit: 'any' })
@@ -255,6 +314,66 @@ export default function Scanner({ active, tradeOn, send, cur, demo, addHist, upd
     pend.current.clear()
     setMsg(why ? '■ ' + why : 'Stopped')
     if (why) addLog('■ ' + why)
+  }
+
+  // ---------- real payouts: how much each contract costs ----------
+  const payScan = () => {
+    if (!tradeOnRef.current) { setPayMsg('Log in to price the contracts'); return }
+    const c = cfgRef.current
+    const sym = c.mkt === 'any' ? 'R_100' : c.mkt
+    const jobs = []
+    if (c.fam === 'ou') {
+      for (let b = 0; b <= 8; b++) jobs.push(['DIGITOVER', b])
+      for (let b = 1; b <= 9; b++) jobs.push(['DIGITUNDER', b])
+    } else if (c.fam === 'md') {
+      jobs.push(['DIGITMATCH', 5], ['DIGITDIFF', 5])
+    } else {
+      jobs.push(['DIGITEVEN', null], ['DIGITODD', null])
+    }
+    setPayMsg('Checking real payouts…')
+    jobs.forEach(([type, barrier], i) => {
+      setTimeout(() => {
+        const rid = ++seq.current
+        reqs.current[rid] = { kind: 'price', type, barrier, t: Date.now() }
+        const p = {
+          proposal: 1, req_id: rid, amount: 1, basis: 'stake', contract_type: type,
+          currency: curRef.current || 'USD', duration: +c.dur || 1, duration_unit: 't', underlying_symbol: sym,
+        }
+        if (barrier !== null) p.barrier = String(barrier)
+        sendRef.current(p)
+      }, i * 450)
+    })
+  }
+  useEffect(() => {
+    if (!active || !tradeOn) return
+    const t = setTimeout(() => { payRef.current = {}; payScan() }, 2500)
+    return () => clearTimeout(t)
+  }, [active, tradeOn, cfg.fam, cfg.dur, cfg.mkt])
+
+  const askAI = async () => {
+    if (!an || !an.best || !an.verdict) return
+    setAiBusy(true)
+    setAiText('')
+    const b = an.best
+    const x = b.ctx
+    const lines = [
+      'Mode: ' + cfg.fam + ', model ' + cfg.model + ', window ' + winN + ' ticks, context ' + x.K + ' digits',
+      'Best: ' + SYMN[b.sym] + ' ' + nameOf(b) + ', estimated win ' + (b.est * 100).toFixed(1) + '% vs baseline ' + (b.base * 100).toFixed(0) + '%, z ' + b.z.toFixed(2) + ', needed ' + an.zc.toFixed(2) + ' across ' + an.nT + ' candidates',
+      'Context: ' + x.nC + ' matching cases, win rate ' + (x.nC ? ((x.wC / x.nC) * 100).toFixed(1) : '-') + '%, held-out ' + (x.pTe * 100).toFixed(1) + '% over ' + x.nTe + ' cases',
+      b.ratio ? 'Real payout ratio ' + b.ratio.toFixed(3) + ', expected return ' + b.ev.toFixed(1) + '% per 1 staked' : 'Real payout not checked yet',
+      'Checks: ' + an.verdict.checks.map((k) => (k[0] ? 'PASS ' : 'FAIL ') + k[1] + ' (' + k[2] + ')').join('; '),
+      'Top: ' + an.cands.slice(0, 5).map((k) => SHORT[k.sym] + ' ' + nameOf(k) + ' ' + (k.est * 100).toFixed(1) + '%').join(', '),
+    ]
+    try {
+      const r = await fetch('/api/ai', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ summary: lines.join('\n') }),
+      })
+      const j = await r.json()
+      setAiText(j.text || j.error || 'No answer')
+    } catch (e) {
+      setAiText('Could not reach the AI: ' + e.message)
+    }
+    setAiBusy(false)
   }
 
   // ---------- trading ----------
@@ -391,6 +510,19 @@ export default function Scanner({ active, tradeOn, send, cur, demo, addHist, upd
       if (!rid || rid < 1100000) return
       const r = reqs.current[rid]
       if (!r) return
+      if (r.kind === 'price') {
+        if (m.error) return
+        if (m.msg_type === 'proposal') {
+          const ask = Number(m.proposal.ask_price)
+          const pay = Number(m.proposal.payout)
+          if (ask > 0 && pay > 0) {
+            payRef.current[payKey(r.type, r.barrier)] = pay / ask
+            setPayMsg('Payouts checked at ' + new Date().toLocaleTimeString())
+          }
+          if (m.subscription) forget(m.subscription.id)
+        }
+        return
+      }
       if (m.error) {
         pend.current.delete(rid)
         if (isRate(m.error)) {
@@ -567,13 +699,19 @@ export default function Scanner({ active, tradeOn, send, cur, demo, addHist, upd
         per[sym] = mres
         mres.cands.forEach((cd) => cands.push({ ...cd, sym }))
       })
-      cands.sort((x, y) => y.edge - x.edge)
+      cands.forEach((cd) => {
+        const ratio = payRef.current[payKey(cd.type, cd.barrier)]
+        if (ratio) { cd.ratio = ratio; cd.ev = (cd.est * ratio - 1) * 100 }
+      })
+      const payAll = cands.length > 0 && cands.every((cd) => cd.ratio)
+      cands.sort((x, y) => (payAll ? y.ev - x.ev : y.edge - x.edge))
       const nT = Math.max(1, cands.length)
       const res = {
         per, cands: cands.slice(0, 6), best: cands[0] || null, nT,
         zc: invNorm(1 - 0.025 / nT), ts: Date.now(),
         ready: Object.values(per).filter(Boolean).length, total: syms.length,
       }
+      res.verdict = verdictOf(res.best, res.zc)
       setAn(res)
       // auto trade
       const best = res.best
@@ -582,7 +720,7 @@ export default function Scanner({ active, tradeOn, send, cur, demo, addHist, upd
       if (Date.now() < rateUntil.current) return
       if (Date.now() - lastTradeAt.current < Math.max(1, +c.cool || 1) * 1000) return
       if (!(best.edge >= +c.minEdge)) return
-      const zok = c.zmode === 'loose' ? true : c.zmode === 'strict' ? best.z >= res.zc : best.z >= 2
+      const zok = c.zmode === 'analyst' ? !!(res.verdict && res.verdict.go) : c.zmode === 'loose' ? true : c.zmode === 'strict' ? best.z >= res.zc : best.z >= 2
       if (!zok) return
       if (Date.now() - (tickAt.current[best.sym] || 0) > 6000) return
       placeTrade(best)
@@ -687,6 +825,7 @@ export default function Scanner({ active, tradeOn, send, cur, demo, addHist, upd
                 <span className="chip">baseline {(best.base * 100).toFixed(0)}%</span>
                 <span className="chip">{best.edge >= 0 ? '+' : ''}{best.edge.toFixed(2)} pts</span>
                 <span className="chip">z {best.z.toFixed(2)}</span>
+                {best.ev !== undefined && <span className="chip">EV {best.ev.toFixed(1)}%</span>}
               </div>
               <div className="hrow">
                 <span className={'chip ' + verdict}>
@@ -731,6 +870,7 @@ export default function Scanner({ active, tradeOn, send, cur, demo, addHist, upd
           </label>
           <label>Model
             <select value={cfg.model} onChange={(e) => setC({ model: e.target.value })}>
+              <option value="ctx">Context: after the last few digits</option>
               <option value="ens">Blend of all three</option>
               <option value="freq">Overall share</option>
               <option value="recent">Recent 100 ticks</option>
@@ -738,6 +878,11 @@ export default function Scanner({ active, tradeOn, send, cur, demo, addHist, upd
             </select>
           </label>
         </div>
+        <label>Digits to look back at (context)
+          <select value={cfg.ctxk} onChange={(e) => setC({ ctxk: +e.target.value })}>
+            {[1, 2, 3, 4].map((n) => <option key={n} value={n}>{n} digit{n > 1 ? 's' : ''}</option>)}
+          </select>
+        </label>
         <label>History window
           <select value={cfg.win} onChange={(e) => setC({ win: +e.target.value })}>
             {[300, 500, 1000, 2000, 5000].map((n) => <option key={n} value={n}>{n} ticks</option>)}
@@ -756,7 +901,7 @@ export default function Scanner({ active, tradeOn, send, cur, demo, addHist, upd
             </div>
             <div className="rkv">
               <b>{(cd.est * 100).toFixed(1)}%</b>
-              <small>{cd.edge >= 0 ? '+' : ''}{cd.edge.toFixed(2)} · z {cd.z.toFixed(1)}</small>
+              <small>{cd.edge >= 0 ? '+' : ''}{cd.edge.toFixed(2)} · z {cd.z.toFixed(1)}{cd.ev !== undefined ? ' · EV ' + cd.ev.toFixed(1) + '%' : ''}</small>
             </div>
           </div>
         )) : <div className="muted">Waiting for enough ticks…</div>}
@@ -800,6 +945,32 @@ export default function Scanner({ active, tradeOn, send, cur, demo, addHist, upd
             <div className="muted">Dashed line = 10% (fair). Last digit {wm.last} outlined.</div>
           </>
         ) : <div className="muted">Waiting for enough ticks…</div>}
+      </section>
+
+      <section className="card">
+        <div className="sech">
+          <b>ANALYST</b>
+          <span className={'chip ' + (an && an.verdict ? (an.verdict.go ? 'ok' : 'warn') : '')}>
+            {an && an.verdict ? (an.verdict.go ? 'TRADE' : 'WAIT') : '…'}
+          </span>
+        </div>
+        {an && an.verdict ? (
+          <div className="checks">
+            {an.verdict.checks.map(([ok, name, why], i) => (
+              <div className={'chk ' + (ok ? 'y' : 'n')} key={i}>
+                <i>{ok ? '✓' : '✗'}</i>
+                <div><b>{name}</b><small>{why}</small></div>
+              </div>
+            ))}
+          </div>
+        ) : <div className="muted">Waiting for enough ticks…</div>}
+        <div className="row">
+          <button disabled={!tradeOn} onClick={payScan}>Check real payouts</button>
+          <button disabled={aiBusy || !an || !an.best} onClick={askAI}>{aiBusy ? 'Thinking…' : 'Ask AI to review'}</button>
+        </div>
+        {payMsg && <div className="muted">{payMsg}</div>}
+        {aiText && <div className="aibox">{aiText}</div>}
+        <div className="muted">The analyst only says TRADE when every check passes. Most of the time it will say WAIT, which is the honest answer for random digits.</div>
       </section>
 
       <section className="card">
@@ -850,6 +1021,7 @@ export default function Scanner({ active, tradeOn, send, cur, demo, addHist, upd
         </div>
         <label>Significance needed
           <select disabled={running} value={cfg.zmode} onChange={(e) => setC({ zmode: e.target.value })}>
+            <option value="analyst">Analyst: every check must pass</option>
             <option value="strict">Strict: beyond chance across all candidates</option>
             <option value="normal">Normal: z-score of 2 or more</option>
             <option value="loose">Loose: edge only (trades on noise)</option>
