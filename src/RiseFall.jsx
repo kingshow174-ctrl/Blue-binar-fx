@@ -7,8 +7,6 @@ const MKTS = [
   ['R_75', 'Volatility 75'], ['R_100', 'Volatility 100'],
   ['1HZ10V', 'Vol 10 (1s)'], ['1HZ25V', 'Vol 25 (1s)'], ['1HZ50V', 'Vol 50 (1s)'],
   ['1HZ75V', 'Vol 75 (1s)'], ['1HZ100V', 'Vol 100 (1s)'],
-  ['frxEURUSD', 'EUR/USD'], ['frxGBPUSD', 'GBP/USD'], ['frxUSDJPY', 'USD/JPY'],
-  ['frxXAUUSD', 'Gold'], ['cryBTCUSD', 'Bitcoin'],
 ]
 const MN = Object.fromEntries(MKTS)
 const TFS = [[60, '1m'], [120, '2m'], [180, '3m'], [300, '5m'], [600, '10m'], [900, '15m'], [1800, '30m'], [3600, '1h']]
@@ -83,7 +81,7 @@ const DEF = {
   hold: 2, stake: 1, sl: 10, tp: 10,
 }
 const loadCfg = () => {
-  try { return { ...DEF, ...JSON.parse(localStorage.bbfx_rf || '{}') } } catch (e) { return DEF }
+  try { const c = { ...DEF, ...JSON.parse(localStorage.bbfx_rf || '{}') }; if (!MN[c.sym]) c.sym = 'R_100'; return c } catch (e) { return DEF }
 }
 const parseC = (c) => ({ t: Number(c.epoch ?? c.open_time), o: Number(c.open), h: Number(c.high), l: Number(c.low), c: Number(c.close) })
 const validC = (c) => [c.t, c.o, c.h, c.l, c.c].every(Number.isFinite)
@@ -264,7 +262,7 @@ const liveStatus = (base, cs) => {
 }
 
 // ---------- chart ----------
-const PAD = 3
+const PAD = 6
 const geom = (W, H, view, len) => {
   const axisW = 60
   const timeH = 18
@@ -413,6 +411,51 @@ const draw = (cv, W, H, cs, an, cfg, view) => {
       g.font = '10px sans-serif'
     })
   }
+  const pos = view.pos || []
+  if (pos.length) {
+    const x0 = x(0) - barW / 2
+    const xt = (t) => x0 + ((t - cs[0].t) / cfg.gran) * barW
+    pos.forEach((p) => {
+      const xe = xt(p.entryT)
+      const xx = clamp(xt(p.expT), 0, plotW - 8)
+      const ye = y(p.entryP)
+      const cy = y(p.price)
+      const col = '#7ef0d4'
+      g.strokeStyle = col
+      g.lineWidth = 1.5
+      g.beginPath(); g.moveTo(xe, ye); g.lineTo(xx, ye); g.stroke()
+      g.beginPath(); g.moveTo(xx, ye - 7); g.lineTo(xx, ye + 7); g.stroke()
+      g.setLineDash([2, 3])
+      g.beginPath(); g.moveTo(xx, ye); g.lineTo(xx, cy); g.stroke()
+      g.setLineDash([])
+      g.strokeStyle = 'rgba(255,255,255,.85)'
+      g.beginPath(); g.moveTo(xx, cy); g.lineTo(plotW, cy); g.stroke()
+      g.fillStyle = col
+      g.beginPath(); g.arc(xe, ye, 5, 0, Math.PI * 2); g.fill()
+      g.fillStyle = '#06201a'
+      g.beginPath(); g.arc(xe, ye, 2, 0, Math.PI * 2); g.fill()
+      g.fillStyle = '#fff'
+      g.beginPath(); g.arc(xx, cy, 5, 0, Math.PI * 2); g.fill()
+      const win = p.profit >= 0
+      const txt = (win ? '+' : '') + p.profit.toFixed(2) + ' ' + (view.cur || 'USD') + (p.done ? ' ✓' : '')
+      g.font = 'bold 12px sans-serif'
+      const tw = g.measureText(txt).width + 22
+      const bx = clamp(xx - tw - 8, 4, plotW - tw - 4)
+      const by = clamp(cy - 36, 4, plotH - 28)
+      g.fillStyle = win ? 'rgba(20,140,86,.92)' : 'rgba(190,40,60,.92)'
+      g.beginPath()
+      if (g.roundRect) g.roundRect(bx, by, tw, 24, 12); else g.rect(bx, by, tw, 24)
+      g.fill()
+      g.strokeStyle = win ? 'rgba(125,255,184,.7)' : 'rgba(255,154,168,.7)'
+      g.lineWidth = 1
+      g.stroke()
+      g.fillStyle = '#fff'
+      g.fillText(txt, bx + 11, by + 12)
+      g.font = '10px sans-serif'
+      g.fillStyle = col
+      g.fillText(p.dir === 'rise' ? '▲ RISE' : '▼ FALL', xe + 8, ye - 11)
+    })
+  }
   const fi = cs.length - 1
   if (fi >= start && fi <= endIdx) {
     g.strokeStyle = 'rgba(255,255,255,.55)'
@@ -430,9 +473,10 @@ const draw = (cv, W, H, cs, an, cfg, view) => {
   }
   g.restore()
   const up = lastP >= cs[cs.length - 1].o
-  g.fillStyle = up ? '#19c37e' : '#ff4d5e'
+  const hasPos = !!(view.pos && view.pos.length)
+  g.fillStyle = hasPos ? '#fff' : up ? '#19c37e' : '#ff4d5e'
   g.fillRect(plotW, py - 8, 60, 16)
-  g.fillStyle = '#fff'
+  g.fillStyle = hasPos ? '#0a1230' : '#fff'
   g.fillText(fmt(lastP), plotW + 4, py)
   g.fillStyle = '#7f95bf'
   const stepN = Math.max(1, Math.round(90 / barW))
@@ -522,12 +566,6 @@ export default function RiseFall({ active, tradeOn, send, cur, demo, addHist, up
   const [log, setLog] = useState([])
   const [msg, setMsg] = useState('')
   const [feedErr, setFeedErr] = useState('')
-  const [mk, setMk] = useState({ rows: {}, sessions: {}, ts: 0 })
-  const [picker, setPicker] = useState(false)
-  const [q, setQ] = useState('')
-  const [onlyOpen, setOnlyOpen] = useState(false)
-  const mkRef = useRef(mk)
-  mkRef.current = mk
 
   const cfgRef = useRef(cfg)
   const csRef = useRef([])
@@ -544,6 +582,7 @@ export default function RiseFall({ active, tradeOn, send, cur, demo, addHist, up
   const reqs = useRef({})
   const openMap = useRef({})
   const seq = useRef(1300000)
+  const doneMarks = useRef([])
   const pollAt = useRef({})
   const rateUntil = useRef(0)
   const sendRef = useRef(send)
@@ -562,59 +601,6 @@ export default function RiseFall({ active, tradeOn, send, cur, demo, addHist, up
   const addLog = (t) => setLog((l) => [t, ...l].slice(0, 12))
   const redraw = () => force((x) => x + 1)
   const cfgKey = [cfg.swing, cfg.tol, cfg.minTouch, cfg.armN, cfg.wick, cfg.hold].join('|')
-
-  // ---------- which markets are open, and when they open and close ----------
-  const loadMarkets = () => {
-    const dates = []
-    for (let k = 0; k < 4; k++) dates.push(new Date(Date.now() + k * 86400000).toISOString().slice(0, 10))
-    const ws = new WebSocket(PUBLIC_WS)
-    const rows = {}
-    const sessions = {}
-    const idDate = {}
-    let got = 0
-    let finished = false
-    let to
-    const done = () => {
-      if (finished) return
-      finished = true
-      clearTimeout(to)
-      try { ws.close() } catch (e) { /* ignore */ }
-      setMk({ rows, sessions, ts: Date.now() })
-    }
-    to = setTimeout(done, 9000)
-    ws.onopen = () => {
-      ws.send(JSON.stringify({ active_symbols: 'brief', req_id: 1400100 }))
-      dates.forEach((d, k) => {
-        idDate[1400101 + k] = d
-        ws.send(JSON.stringify({ trading_times: d, req_id: 1400101 + k }))
-      })
-    }
-    ws.onmessage = (e) => {
-      const m = JSON.parse(e.data)
-      if (m.msg_type === 'active_symbols' && Array.isArray(m.active_symbols)) {
-        m.active_symbols.forEach((x) => {
-          const sym = x.underlying_symbol || x.symbol
-          if (sym) rows[sym] = { open: !!x.exchange_is_open, susp: !!x.is_trading_suspended, market: x.market || 'other' }
-        })
-        got += 1
-      } else if (m.msg_type === 'trading_times') {
-        const d = idDate[m.req_id] || (m.echo_req && m.echo_req.trading_times)
-        if (d && m.trading_times) parseTimes(m.trading_times, String(d), sessions)
-        got += 1
-      } else if (m.error) {
-        got += 1
-      }
-      if (got >= 5) done()
-    }
-    ws.onerror = () => done()
-  }
-  useEffect(() => {
-    if (!active) return
-    if (!mkRef.current.ts || Date.now() - mkRef.current.ts > 300000) loadMarkets()
-    const t = setInterval(loadMarkets, 300000)
-    const t2 = setInterval(redraw, 30000)
-    return () => { clearInterval(t); clearInterval(t2) }
-  }, [active])
 
   const unlock = () => {
     try {
@@ -644,8 +630,6 @@ export default function RiseFall({ active, tradeOn, send, cur, demo, addHist, up
   const placeRF = (dir, why) => {
     const c = cfgRef.current
     if (!tradeOnRef.current) { setMsg('Log in first'); return }
-    const mi = mkRef.current.rows[c.sym]
-    if (mi && (!mi.open || mi.susp)) { setMsg('Market closed, trading is not available now'); return }
     if (Date.now() < rateUntil.current) { setMsg('Deriv asked to slow down, try again in a moment'); return }
     const stake = +c.stake
     if (!(stake >= 0.35)) { setMsg('Stake must be at least 0.35'); return }
@@ -670,6 +654,11 @@ export default function RiseFall({ active, tradeOn, send, cur, demo, addHist, up
     const profit = pnl(c)
     if (Number.isNaN(profit)) return
     helpers.current.updHist(c.contract_id, { status: profit >= 0 ? 'win' : 'loss', profit })
+    doneMarks.current.push({
+      sym: o.meta.sym, dir: o.meta.dir, entryP: o.entryP, entryT: o.entryT, expT: o.expT,
+      price: Number.isFinite(o.spot) && o.spot > 0 ? o.spot : o.entryP, profit, done: true, until: Date.now() + 8000,
+    })
+    redraw()
     netRef.current += profit
     setStats((st) => ({
       net: netRef.current, trades: st.trades + 1, wins: st.wins + (profit >= 0 ? 1 : 0), losses: st.losses + (profit < 0 ? 1 : 0),
@@ -686,6 +675,20 @@ export default function RiseFall({ active, tradeOn, send, cur, demo, addHist, up
     const h = (m) => {
       if (m.msg_type === 'proposal_open_contract') {
         const c = m.proposal_open_contract
+        const oo = c && openMap.current[String(c.contract_id)]
+        if (oo && !isDone(c)) {
+          const pr = Number(c.profit)
+          if (Number.isFinite(pr)) oo.profit = pr
+          const sp = Number(c.current_spot ?? c.current_spot_display_value)
+          if (Number.isFinite(sp) && sp > 0) oo.spot = sp
+          const es = Number(c.entry_spot ?? c.entry_tick)
+          if (Number.isFinite(es) && es > 0) oo.entryP = es
+          const et = Number(c.entry_tick_time ?? c.date_start)
+          if (Number.isFinite(et) && et > 0) oo.entryT = et
+          const ex = Number(c.date_expiry)
+          if (Number.isFinite(ex) && ex > 0) oo.expT = ex
+          redraw()
+        }
         if (c && isDone(c)) {
           const o = openMap.current[String(c.contract_id)]
           if (m.subscription) sendRef.current({ forget: m.subscription.id })
@@ -711,7 +714,12 @@ export default function RiseFall({ active, tradeOn, send, cur, demo, addHist, up
         sendRef.current({ buy: m.proposal.id, price: Number(m.proposal.ask_price) || r.meta.stake, req_id: brid })
       } else if (m.msg_type === 'buy' && r.kind === 'buy') {
         const id = m.buy.contract_id
-        openMap.current[String(id)] = { meta: r.meta, t: Date.now() }
+        const ptS = Number(m.buy.purchase_time) || Math.floor(Date.now() / 1000)
+        const csL = csRef.current
+        openMap.current[String(id)] = {
+          meta: r.meta, t: Date.now(), pt: ptS, entryT: ptS, expT: ptS + r.meta.mins * 60,
+          entryP: csL.length ? csL[csL.length - 1].c : 0, profit: 0,
+        }
         sendRef.current({ proposal_open_contract: 1, contract_id: id, subscribe: 1, req_id: ++seq.current })
         helpers.current.addHist({
           id, t: Date.now(), symbol: r.meta.sym, type: r.meta.dir === 'rise' ? 'Rise' : 'Fall', barrier: null,
@@ -846,57 +854,15 @@ export default function RiseFall({ active, tradeOn, send, cur, demo, addHist, up
   const liveTouch = live.find((x) => x.live) || live[0]
   const bt = an ? an.base.bt : null
   const pct = bt && bt.done ? Math.round((bt.wins / bt.done) * 100) : null
-  const nowMs = Date.now()
-  const infoOf = (sym) => {
-    const row = mk.rows[sym]
-    let open = row ? row.open : null
-    let text = open === null ? 'Status unknown' : open ? 'Open' : 'Closed'
-    const mg = mergeSessions(mk.sessions[sym])
-    if (mg.length) {
-      const curS = mg.find((x) => nowMs >= x[0] && nowMs < x[1])
-      const nxt = mg.find((x) => x[0] > nowMs)
-      if (curS && open !== false) {
-        text = curS[1] - nowMs > 2.5 * 86400000 ? 'Open 24h' : 'Open · closes ' + fmtClock(curS[1], nowMs) + ' (in ' + fmtDur(curS[1] - nowMs) + ')'
-        if (open === null) open = true
-      } else if (nxt && open !== true) {
-        text = 'Closed · opens ' + fmtClock(nxt[0], nowMs) + ' (in ' + fmtDur(nxt[0] - nowMs) + ')'
-        if (open === null) open = false
-      }
-    }
-    if (row && row.susp) { text = 'Trading suspended'; open = false }
-    return { open, text }
-  }
-  const selInfo = infoOf(cfg.sym)
-  const closedNow = selInfo.open === false
-  const pickerGroups = (() => {
-    if (!picker) return []
-    const keys = Object.keys(mk.rows).length ? Object.keys(mk.rows) : MKTS.map((x) => x[0])
-    const ql = q.trim().toLowerCase()
-    const items = keys.map((sym) => {
-      const inf = infoOf(sym)
-      const row = mk.rows[sym]
-      const market = row ? row.market : sym.indexOf('frx') === 0 ? 'forex' : sym.indexOf('cry') === 0 ? 'cryptocurrency' : 'synthetic_index'
-      return { sym, name: prettySym(sym), market, open: inf.open, text: inf.text }
-    }).filter((it) => (!ql || (it.name + ' ' + it.sym).toLowerCase().indexOf(ql) >= 0) && (!onlyOpen || it.open === true))
-    const by = {}
-    items.forEach((it) => { (by[it.market] = by[it.market] || []).push(it) })
-    const order = (m) => { const k = GROUP_ORDER.indexOf(m); return k < 0 ? 99 : k }
-    return Object.keys(by).sort((a, b) => order(a) - order(b)).map((m) => [
-      GROUP_NAME[m] || m.charAt(0).toUpperCase() + m.slice(1),
-      by[m].sort((a, b) => (b.open === true) - (a.open === true) || a.name.localeCompare(b.name)),
-    ])
-  })()
   const hint = liveTouch
     ? (liveTouch.dir === 'down' ? 'Touching resistance ' : 'Touching support ') + liveTouch.z.mid.toFixed(2) +
       ' · waiting for a ' + (liveTouch.dir === 'down' ? 'bearish' : 'bullish') + ' engulfing or kangaroo tail'
     : 'No zone touched yet · watching'
   const tools = (
     <div className="rf-tools">
-      <button className="rf-mkt" onClick={() => setPicker(true)}>
-        <i className={'rf-dot ' + (selInfo.open === true ? 'o' : selInfo.open === false ? 'c' : 'u')} />
-        <span className="nm"><b>{prettySym(cfg.sym)}</b><small>{selInfo.text}</small></span>
-        <span className="rf-caret">▾</span>
-      </button>
+      <select value={cfg.sym} onChange={(e) => setC({ sym: e.target.value })}>
+        {MKTS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+      </select>
       <div className="rf-tf">
         {TFS.map(([g, l]) => <button key={g} className={cfg.gran === g ? 'on' : ''} onClick={() => setC({ gran: g })}>{l}</button>)}
       </div>
@@ -907,6 +873,17 @@ export default function RiseFall({ active, tradeOn, send, cur, demo, addHist, up
       </div>
     </div>
   )
+  const posNow = Date.now()
+  doneMarks.current = doneMarks.current.filter((d) => d.until > posNow)
+  const lastClose = last ? last.c : 0
+  view.current.pos = [
+    ...Object.values(openMap.current).filter((o) => o.meta.sym === cfg.sym).map((o) => ({
+      dir: o.meta.dir, entryP: o.entryP || lastClose, entryT: o.entryT || o.pt,
+      expT: o.expT || o.pt + o.meta.mins * 60, price: o.spot || lastClose, profit: Number.isFinite(o.profit) ? o.profit : 0,
+    })),
+    ...doneMarks.current.filter((d) => d.sym === cfg.sym),
+  ]
+  view.current.cur = cur
   const chart = <RfChart cs={cs} an={an} cfg={cfg} view={view.current} onView={redraw} />
   const banner = flash && (
     <div className={'rf-flash ' + flash.dir}>
@@ -914,11 +891,8 @@ export default function RiseFall({ active, tradeOn, send, cur, demo, addHist, up
       <span>{flash.kind === 'engulf' ? 'Engulfing' : 'Kangaroo tail'} at {flash.price.toFixed(2)}</span>
     </div>
   )
-  const closedBar = closedNow ? (
-    <div className="rf-closed"><b>MARKET CLOSED</b><span>{selInfo.text}</span></div>
-  ) : null
   const buttons = (
-    <div className={'rf-buy' + (closedNow ? ' off' : '')}>
+    <div className="rf-buy">
       <button className="rise" onClick={() => placeRF('rise', 'manual')}>▲ RISE</button>
       <button className="fall" onClick={() => placeRF('fall', 'manual')}>▼ FALL</button>
     </div>
@@ -931,14 +905,10 @@ export default function RiseFall({ active, tradeOn, send, cur, demo, addHist, up
           <div className="rf-eye">RISE / FALL · CANDLE ANALYST</div>
           <div className="rf-title">{MN[cfg.sym]} <small>{(TFS.find((x) => x[0] === cfg.gran) || [0, ''])[1]}</small></div>
           <div className="rf-price">{last ? last.c.toFixed(clamp(3 - Math.floor(Math.log10(Math.max(1e-9, last.h - last.l || 1))), 2, 5)) : '…'}</div>
-          <div className="rf-mi">{selInfo.text}</div>
         </div>
         <div className="rf-st">
           <span className={'rf-chip ' + (liveTouch ? (liveTouch.dir === 'down' ? 'bear' : 'bull') : '')}>
             {liveTouch ? (liveTouch.dir === 'down' ? 'AT RESISTANCE' : 'AT SUPPORT') : 'SCANNING'}
-          </span>
-          <span className={'rf-chip ' + (selInfo.open === true ? 'bull' : selInfo.open === false ? 'bear' : '')}>
-            {selInfo.open === true ? 'MARKET OPEN' : selInfo.open === false ? 'MARKET CLOSED' : 'MARKET ?'}
           </span>
           <span className="rf-chip">{an ? an.base.zones.length + ' zones' : '…'}</span>
         </div>
@@ -949,7 +919,6 @@ export default function RiseFall({ active, tradeOn, send, cur, demo, addHist, up
         <div className="rf-chartbox">
           {chart}
           {banner}
-          {closedBar}
           <div className="rf-fab">
             <button onClick={() => { view.current.off = 0; redraw() }} aria-label="Latest">⏭</button>
             <button onClick={() => setFull(true)} aria-label="Full screen">⤢</button>
@@ -1051,37 +1020,6 @@ export default function RiseFall({ active, tradeOn, send, cur, demo, addHist, up
         </section>
       )}
 
-      {picker && (
-        <div className="rf-sheet">
-          <div className="rf-sh-top">
-            <b>Markets</b>
-            <button onClick={loadMarkets}>↻ Refresh</button>
-            <button onClick={() => setPicker(false)}>✕</button>
-          </div>
-          <input className="rf-q" placeholder="Search markets" value={q} onChange={(e) => setQ(e.target.value)} />
-          <div className="rf-tg">
-            <button className={onlyOpen ? 'on' : ''} onClick={() => setOnlyOpen(true)}>Open now</button>
-            <button className={!onlyOpen ? 'on' : ''} onClick={() => setOnlyOpen(false)}>All</button>
-          </div>
-          <div className="rf-sh-list">
-            {mk.ts === 0 && <div className="muted">Loading markets…</div>}
-            {pickerGroups.map(([gname, items]) => (
-              <div key={gname}>
-                <div className="rf-gh">{gname} <small>{items.filter((x) => x.open === true).length}/{items.length} open</small></div>
-                {items.map((it) => (
-                  <button key={it.sym} className={'rf-row' + (it.sym === cfg.sym ? ' sel' : '')} onClick={() => { setC({ sym: it.sym }); setPicker(false) }}>
-                    <i className={'rf-dot ' + (it.open === true ? 'o' : it.open === false ? 'c' : 'u')} />
-                    <span className="nm">{it.name}<small>{it.text}</small></span>
-                    <span className={'tag ' + (it.open === true ? 'o' : it.open === false ? 'c' : '')}>{it.open === true ? 'OPEN' : it.open === false ? 'CLOSED' : '?'}</span>
-                  </button>
-                ))}
-              </div>
-            ))}
-            {mk.ts > 0 && !pickerGroups.length && <div className="muted">No markets match.</div>}
-          </div>
-        </div>
-      )}
-
       {full && (
         <div className="rf-full">
           <div className="rf-ftop">
@@ -1094,7 +1032,6 @@ export default function RiseFall({ active, tradeOn, send, cur, demo, addHist, up
           <div className="rf-fchart">
             {chart}
             {banner}
-          {closedBar}
             <div className="rf-fab">
               <button onClick={() => { view.current.off = 0; redraw() }} aria-label="Latest">⏭</button>
             </div>
