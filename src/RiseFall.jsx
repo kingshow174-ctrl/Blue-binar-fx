@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { Component, useEffect, useRef, useState } from 'react'
 import { bus } from './bus.js'
 
 const PUBLIC_WS = 'wss://api.derivws.com/trading/v1/options/ws/public'
@@ -11,77 +11,17 @@ const MKTS = [
 const MN = Object.fromEntries(MKTS)
 const TFS = [[60, '1m'], [120, '2m'], [180, '3m'], [300, '5m'], [600, '10m'], [900, '15m'], [1800, '30m'], [3600, '1h']]
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
-const GROUP_NAME = {
-  synthetic_index: 'Synthetic indices', derived: 'Synthetic indices', forex: 'Forex', indices: 'Stock indices',
-  commodities: 'Commodities', cryptocurrency: 'Cryptocurrencies',
-}
-const GROUP_ORDER = ['synthetic_index', 'derived', 'forex', 'indices', 'commodities', 'cryptocurrency']
-const prettySym = (sym) => {
-  if (MN[sym]) return MN[sym]
-  let m = /^frx([A-Z]{3})([A-Z]{3})$/.exec(sym)
-  if (m) return m[1] + '/' + m[2]
-  m = /^cry([A-Z]{3,5})([A-Z]{3})$/.exec(sym)
-  if (m) return m[1] + '/' + m[2]
-  m = /^R_(\d+)$/.exec(sym)
-  if (m) return 'Volatility ' + m[1]
-  m = /^1HZ(\d+)V$/.exec(sym)
-  if (m) return 'Volatility ' + m[1] + ' (1s)'
-  return sym
-}
-// collect today's open/close sessions (UTC) for every symbol in a trading_times answer
-const parseTimes = (obj, dateStr, out) => {
-  const base = Date.parse(dateStr + 'T00:00:00Z')
-  const toMs = (t) => {
-    const m = /^(\d\d):(\d\d):(\d\d)$/.exec(String(t))
-    return m ? base + Number(m[1]) * 3600000 + Number(m[2]) * 60000 + Number(m[3]) * 1000 : null
-  }
-  const walk = (o) => {
-    if (!o || typeof o !== 'object') return
-    if (Array.isArray(o)) { o.forEach(walk); return }
-    const sym = o.underlying_symbol || o.symbol
-    const tm = o.times || o.trading_times
-    if (sym && tm && (Array.isArray(tm.open) || Array.isArray(tm.close))) {
-      const op = tm.open || []
-      const cl = tm.close || []
-      op.forEach((x, i) => {
-        const a = toMs(x)
-        const b = toMs(cl[i])
-        if (a !== null && b !== null && b >= a) (out[sym] = out[sym] || []).push([a, b])
-      })
-    }
-    Object.values(o).forEach(walk)
-  }
-  walk(obj)
-}
-const mergeSessions = (arr) => {
-  if (!arr || !arr.length) return []
-  const a = arr.slice().sort((x, y) => x[0] - y[0])
-  const out = [a[0].slice()]
-  for (let i = 1; i < a.length; i++) {
-    const last = out[out.length - 1]
-    if (a[i][0] <= last[1] + 2000) last[1] = Math.max(last[1], a[i][1])
-    else out.push(a[i].slice())
-  }
-  return out
-}
-const fmtDur = (ms) => {
-  const m = Math.max(0, Math.round(ms / 60000))
-  const d = Math.floor(m / 1440)
-  const h = Math.floor((m % 1440) / 60)
-  return d > 0 ? d + 'd ' + h + 'h' : h > 0 ? h + 'h ' + (m % 60) + 'm' : (m % 60) + 'm'
-}
-const fmtClock = (ms, nowMs) => {
-  const d = new Date(ms)
-  const hm = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-  return d.toDateString() === new Date(nowMs).toDateString() ? hm : d.toLocaleDateString([], { weekday: 'short' }) + ' ' + hm
-}
 const DEF = {
   sym: 'R_100', gran: 300, zones: true, zig: true, hl: true, pats: true, rt: true,
   swing: 3, tol: 0.5, minTouch: 2, armN: 3, wick: 2, sound: true,
   hold: 2, stake: 1, sl: 10, tp: 10, mart: false, stakes: '1, 2, 4, 8', mend: 'restart',
 }
 const loadCfg = () => {
-  try { const c = { ...DEF, ...JSON.parse(localStorage.bbfx_rf || '{}') }; if (!MN[c.sym]) c.sym = 'R_100'; return c } catch (e) { return DEF }
+  try {
+    const c = { ...DEF, ...JSON.parse(localStorage.bbfx_rf || '{}') }
+    if (!MN[c.sym]) c.sym = 'R_100'
+    return c
+  } catch (e) { return DEF }
 }
 const parseC = (c) => ({ t: Number(c.epoch ?? c.open_time), o: Number(c.open), h: Number(c.high), l: Number(c.low), c: Number(c.close) })
 const validC = (c) => [c.t, c.o, c.h, c.l, c.c].every(Number.isFinite)
@@ -437,7 +377,7 @@ const draw = (cv, W, H, cs, an, cfg, view) => {
       g.fillStyle = '#fff'
       g.beginPath(); g.arc(xx, cy, 5, 0, Math.PI * 2); g.fill()
       const win = p.profit >= 0
-      const txt = (win ? '+' : '') + p.profit.toFixed(2) + ' ' + (view.cur || 'USD') + (p.done ? ' ✓' : '')
+      const txt = (win ? '+' : '') + p.profit.toFixed(2) + ' ' + (view.cur || 'USD') + (p.done ? ' \u2713' : '')
       g.font = 'bold 12px sans-serif'
       const tw = g.measureText(txt).width + 22
       const bx = clamp(xx - tw - 8, 4, plotW - tw - 4)
@@ -453,7 +393,7 @@ const draw = (cv, W, H, cs, an, cfg, view) => {
       g.fillText(txt, bx + 11, by + 12)
       g.font = '10px sans-serif'
       g.fillStyle = col
-      g.fillText(p.dir === 'rise' ? '▲ RISE' : '▼ FALL', xe + 8, ye - 11)
+      g.fillText(p.dir === 'rise' ? '\u25b2 RISE' : '\u25bc FALL', xe + 8, ye - 11)
     })
   }
   const fi = cs.length - 1
@@ -555,7 +495,7 @@ function RfChart({ cs, an, cfg, view, onView }) {
   )
 }
 
-export default function RiseFall({ active, tradeOn, send, cur, demo, addHist, updHist }) {
+function RiseFallInner({ active, tradeOn, send, cur, demo, addHist, updHist }) {
   const [cfg, setCfg] = useState(loadCfg)
   const [, force] = useState(0)
   const [full, setFull] = useState(false)
@@ -667,11 +607,12 @@ export default function RiseFall({ active, tradeOn, send, cur, demo, addHist, up
     const profit = pnl(c)
     if (Number.isNaN(profit)) return
     helpers.current.updHist(c.contract_id, { status: profit >= 0 ? 'win' : 'loss', profit })
+    const xs = Number(c.exit_tick ?? c.sell_spot ?? c.current_spot)
     doneMarks.current.push({
       sym: o.meta.sym, dir: o.meta.dir, entryP: o.entryP, entryT: o.entryT, expT: o.expT,
-      price: Number.isFinite(o.spot) && o.spot > 0 ? o.spot : o.entryP, profit, done: true, until: Date.now() + 8000,
+      price: Number.isFinite(xs) && xs > 0 ? xs : (Number.isFinite(o.spot) && o.spot > 0 ? o.spot : o.entryP),
+      profit, done: true, until: Date.now() + 8000,
     })
-    redraw()
     netRef.current += profit
     if (cfgRef.current.mart) {
       const l = stakesList()
@@ -691,7 +632,8 @@ export default function RiseFall({ active, tradeOn, send, cur, demo, addHist, up
     setStats((st) => ({
       net: netRef.current, trades: st.trades + 1, wins: st.wins + (profit >= 0 ? 1 : 0), losses: st.losses + (profit < 0 ? 1 : 0),
     }))
-    addLog((profit >= 0 ? '✅ ' : '❌ ') + MN[o.meta.sym] + ' ' + (o.meta.dir === 'rise' ? 'Rise' : 'Fall') + ' · stake ' + o.meta.stake + ' · ' + (profit >= 0 ? '+' : '') + profit.toFixed(2) + ' (' + o.meta.why + ')' + (cfgRef.current.mart ? ' → next stake ' + curStake() : ''))
+    addLog((profit >= 0 ? '✅ ' : '❌ ') + MN[o.meta.sym] + ' ' + (o.meta.dir === 'rise' ? 'Rise' : 'Fall') + ' · stake ' + o.meta.stake + ' · ' + (profit >= 0 ? '+' : '') + profit.toFixed(2) + ' (' + o.meta.why + ')' + (cfgRef.current.mart ? ' \u2192 next stake ' + curStake() : ''))
+    redraw()
     const c2 = cfgRef.current
     if (runRef.current) {
       if (netRef.current <= -Math.abs(+c2.sl)) { runRef.current = false; setRunning(false); setMsg('Stop loss reached, auto-trade stopped') }
@@ -866,8 +808,8 @@ export default function RiseFall({ active, tradeOn, send, cur, demo, addHist, up
     if (!(+c.stake >= 0.35)) return setMsg('Stake must be at least 0.35')
     if (!(+c.sl > 0)) return setMsg('Set a stop loss above 0')
     if (!demo && !confirm('REAL account. The bot will trade every signal automatically with real money. Start?')) return
-    idxRef.current = 0
     netRef.current = 0
+    idxRef.current = 0
     setStats({ net: 0, trades: 0, wins: 0, losses: 0 })
     runRef.current = true
     setRunning(true)
@@ -910,7 +852,7 @@ export default function RiseFall({ active, tradeOn, send, cur, demo, addHist, up
       dir: o.meta.dir, entryP: o.entryP || lastClose, entryT: o.entryT || o.pt,
       expT: o.expT || o.pt + o.meta.mins * 60, price: o.spot || lastClose, profit: Number.isFinite(o.profit) ? o.profit : 0,
     })),
-    ...doneMarks.current.filter((d) => d.sym === cfg.sym),
+    ...doneMarks.current.filter((d) => d.sym === cfg.sym).map((d) => ({ ...d, entryP: d.entryP || lastClose })),
   ]
   view.current.cur = cur
   const stakeL = stakesList()
@@ -983,7 +925,7 @@ export default function RiseFall({ active, tradeOn, send, cur, demo, addHist, up
       </section>
 
       <section className="card">
-        <div className="sech"><b>TRADE</b><span className="sub">one-tap Rise or Fall</span></div>
+        <div className="sech"><b>TRADE</b><span className="sub">RISE / FALL float at the bottom</span></div>
         <div className="muted">Next stake <b>{nextStakeUI}</b>. Use the RISE / FALL buttons at the bottom of the screen.</div>
         <div className="row">
           <label>Stake
@@ -1077,7 +1019,7 @@ export default function RiseFall({ active, tradeOn, send, cur, demo, addHist, up
           {ovOpen ? (
             <div className="rf-ovin">
               <div className="rf-ovtop">
-                <span>Next stake <b>{nextStakeUI}</b>{cfg.mart ? ' · step ' + (stepNow + 1) + '/' + stakeL.length : ''}</span>
+                <span>Next stake <b>{nextStakeUI}</b>{cfg.mart ? ' \u00b7 step ' + (stepNow + 1) + '/' + stakeL.length : ''}</span>
                 <button onClick={() => toggleOv(false)}>Hide ▾</button>
               </div>
               <div className="rf-buy">
@@ -1111,5 +1053,43 @@ export default function RiseFall({ active, tradeOn, send, cur, demo, addHist, up
         </div>
       )}
     </div>
+  )
+}
+
+class RfBoundary extends Component {
+  constructor(p) {
+    super(p)
+    this.state = { err: null }
+  }
+
+  static getDerivedStateFromError(err) {
+    return { err }
+  }
+
+  render() {
+    if (this.state.err) {
+      return (
+        <div className="card">
+          <div className="muted">Rise/Fall hit an error: {String((this.state.err && this.state.err.message) || this.state.err)}</div>
+          <button
+            onClick={() => {
+              try { localStorage.removeItem('bbfx_rf'); localStorage.removeItem('bbfx_rfov') } catch (e) { /* ignore */ }
+              location.reload()
+            }}
+          >
+            Reset Rise/Fall settings
+          </button>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
+export default function RiseFall(props) {
+  return (
+    <RfBoundary>
+      <RiseFallInner {...props} />
+    </RfBoundary>
   )
 }
