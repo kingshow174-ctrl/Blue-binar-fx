@@ -78,7 +78,7 @@ const fmtClock = (ms, nowMs) => {
 const DEF = {
   sym: 'R_100', gran: 300, zones: true, zig: true, hl: true, pats: true, rt: true,
   swing: 3, tol: 0.5, minTouch: 2, armN: 3, wick: 2, sound: true,
-  hold: 2, stake: 1, sl: 10, tp: 10,
+  hold: 2, stake: 1, sl: 10, tp: 10, mart: false, stakes: '1, 2, 4, 8', mend: 'restart',
 }
 const loadCfg = () => {
   try { const c = { ...DEF, ...JSON.parse(localStorage.bbfx_rf || '{}') }; if (!MN[c.sym]) c.sym = 'R_100'; return c } catch (e) { return DEF }
@@ -566,6 +566,8 @@ export default function RiseFall({ active, tradeOn, send, cur, demo, addHist, up
   const [log, setLog] = useState([])
   const [msg, setMsg] = useState('')
   const [feedErr, setFeedErr] = useState('')
+  const [ovOpen, setOvOpen] = useState(() => { try { return localStorage.bbfx_rfov !== '0' } catch (e) { return true } })
+  const toggleOv = (v) => { setOvOpen(v); try { localStorage.bbfx_rfov = v ? '1' : '0' } catch (e) { /* ignore */ } }
 
   const cfgRef = useRef(cfg)
   const csRef = useRef([])
@@ -582,6 +584,7 @@ export default function RiseFall({ active, tradeOn, send, cur, demo, addHist, up
   const reqs = useRef({})
   const openMap = useRef({})
   const seq = useRef(1300000)
+  const idxRef = useRef(0)
   const doneMarks = useRef([])
   const pollAt = useRef({})
   const rateUntil = useRef(0)
@@ -627,11 +630,21 @@ export default function RiseFall({ active, tradeOn, send, cur, demo, addHist, up
   }
 
   // ---------- trading ----------
+  const stakesList = () => {
+    const l = String(cfgRef.current.stakes).split(/[\s,;]+/).map(Number).filter((x) => Number.isFinite(x) && x >= 0.35)
+    return l.length ? l : [Math.max(0.35, +cfgRef.current.stake || 1)]
+  }
+  const curStake = () => {
+    const c = cfgRef.current
+    if (!c.mart) return +c.stake
+    const l = stakesList()
+    return l[Math.min(idxRef.current, l.length - 1)]
+  }
   const placeRF = (dir, why) => {
     const c = cfgRef.current
     if (!tradeOnRef.current) { setMsg('Log in first'); return }
     if (Date.now() < rateUntil.current) { setMsg('Deriv asked to slow down, try again in a moment'); return }
-    const stake = +c.stake
+    const stake = curStake()
     if (!(stake >= 0.35)) { setMsg('Stake must be at least 0.35'); return }
     if (netRef.current - stake <= -Math.abs(+c.sl)) {
       if (runRef.current) { runRef.current = false; setRunning(false) }
@@ -660,10 +673,25 @@ export default function RiseFall({ active, tradeOn, send, cur, demo, addHist, up
     })
     redraw()
     netRef.current += profit
+    if (cfgRef.current.mart) {
+      const l = stakesList()
+      if (profit >= 0) idxRef.current = 0
+      else {
+        idxRef.current += 1
+        if (idxRef.current >= l.length) {
+          idxRef.current = 0
+          if (cfgRef.current.mend === 'stop' && runRef.current) {
+            runRef.current = false
+            setRunning(false)
+            setMsg('End of the stake list reached, auto-trade stopped')
+          }
+        }
+      }
+    }
     setStats((st) => ({
       net: netRef.current, trades: st.trades + 1, wins: st.wins + (profit >= 0 ? 1 : 0), losses: st.losses + (profit < 0 ? 1 : 0),
     }))
-    addLog((profit >= 0 ? '✅ ' : '❌ ') + MN[o.meta.sym] + ' ' + (o.meta.dir === 'rise' ? 'Rise' : 'Fall') + ' · stake ' + o.meta.stake + ' · ' + (profit >= 0 ? '+' : '') + profit.toFixed(2) + ' (' + o.meta.why + ')')
+    addLog((profit >= 0 ? '✅ ' : '❌ ') + MN[o.meta.sym] + ' ' + (o.meta.dir === 'rise' ? 'Rise' : 'Fall') + ' · stake ' + o.meta.stake + ' · ' + (profit >= 0 ? '+' : '') + profit.toFixed(2) + ' (' + o.meta.why + ')' + (cfgRef.current.mart ? ' → next stake ' + curStake() : ''))
     const c2 = cfgRef.current
     if (runRef.current) {
       if (netRef.current <= -Math.abs(+c2.sl)) { runRef.current = false; setRunning(false); setMsg('Stop loss reached, auto-trade stopped') }
@@ -754,7 +782,7 @@ export default function RiseFall({ active, tradeOn, send, cur, demo, addHist, up
     clearTimeout(flashTimer.current)
     flashTimer.current = setTimeout(() => setFlash(null), 9000)
     ring()
-    if (runRef.current && tradeOnRef.current) placeRF(s.dir, s.kind === 'engulf' ? 'engulfing' : 'kangaroo tail')
+    if (runRef.current && tradeOnRef.current && (!cfgRef.current.mart || Object.keys(openMap.current).length === 0)) placeRF(s.dir, s.kind === 'engulf' ? 'engulfing' : 'kangaroo tail')
   }
   const recompute = () => {
     const cs = csRef.current
@@ -838,6 +866,7 @@ export default function RiseFall({ active, tradeOn, send, cur, demo, addHist, up
     if (!(+c.stake >= 0.35)) return setMsg('Stake must be at least 0.35')
     if (!(+c.sl > 0)) return setMsg('Set a stop loss above 0')
     if (!demo && !confirm('REAL account. The bot will trade every signal automatically with real money. Start?')) return
+    idxRef.current = 0
     netRef.current = 0
     setStats({ net: 0, trades: 0, wins: 0, losses: 0 })
     runRef.current = true
@@ -884,6 +913,9 @@ export default function RiseFall({ active, tradeOn, send, cur, demo, addHist, up
     ...doneMarks.current.filter((d) => d.sym === cfg.sym),
   ]
   view.current.cur = cur
+  const stakeL = stakesList()
+  const stepNow = Math.min(idxRef.current, stakeL.length - 1)
+  const nextStakeUI = cfg.mart ? stakeL[stepNow] : +cfg.stake
   const chart = <RfChart cs={cs} an={an} cfg={cfg} view={view.current} onView={redraw} />
   const banner = flash && (
     <div className={'rf-flash ' + flash.dir}>
@@ -952,7 +984,7 @@ export default function RiseFall({ active, tradeOn, send, cur, demo, addHist, up
 
       <section className="card">
         <div className="sech"><b>TRADE</b><span className="sub">one-tap Rise or Fall</span></div>
-        {buttons}
+        <div className="muted">Next stake <b>{nextStakeUI}</b>. Use the RISE / FALL buttons at the bottom of the screen.</div>
         <div className="row">
           <label>Stake
             <input type="number" min="0.35" step="0.05" value={cfg.stake} onChange={(e) => setC({ stake: e.target.value })} />
@@ -969,6 +1001,26 @@ export default function RiseFall({ active, tradeOn, send, cur, demo, addHist, up
             <input type="number" min="0" step="0.5" disabled={running} value={cfg.tp} onChange={(e) => setC({ tp: e.target.value })} />
           </label>
         </div>
+        <label>Martingale
+          <select disabled={running} value={cfg.mart ? 'on' : 'off'} onChange={(e) => setC({ mart: e.target.value === 'on' })}>
+            <option value="off">Off (fixed stake)</option>
+            <option value="on">On (stake list)</option>
+          </select>
+        </label>
+        {cfg.mart && (
+          <>
+            <label>Stake list (next one after each loss)
+              <input type="text" disabled={running} value={cfg.stakes} onChange={(e) => setC({ stakes: e.target.value })} />
+            </label>
+            <label>At the end of the list
+              <select disabled={running} value={cfg.mend} onChange={(e) => setC({ mend: e.target.value })}>
+                <option value="restart">Restart from the first stake</option>
+                <option value="stop">Stop auto-trade</option>
+              </select>
+            </label>
+            <div className="muted">A win goes back to the first stake. Each loss moves to the next one. Manual taps count too.</div>
+          </>
+        )}
         <button className={'buy ' + (running ? 'odd' : 'even')} onClick={running ? stopAuto : startAuto}>
           {running ? 'STOP AUTO-TRADE' : 'START AUTO-TRADE ON SIGNALS'}
         </button>
@@ -1018,6 +1070,25 @@ export default function RiseFall({ active, tradeOn, send, cur, demo, addHist, up
           <div className="muted">Trade activity</div>
           {log.map((l, i) => <div className="log" key={i}>{l}</div>)}
         </section>
+      )}
+
+      {!full && (
+        <div className={'rf-ov' + (ovOpen ? '' : ' min')}>
+          {ovOpen ? (
+            <div className="rf-ovin">
+              <div className="rf-ovtop">
+                <span>Next stake <b>{nextStakeUI}</b>{cfg.mart ? ' · step ' + (stepNow + 1) + '/' + stakeL.length : ''}</span>
+                <button onClick={() => toggleOv(false)}>Hide ▾</button>
+              </div>
+              <div className="rf-buy">
+                <button className="rise" onClick={() => placeRF('rise', 'manual')}>▲ RISE</button>
+                <button className="fall" onClick={() => placeRF('fall', 'manual')}>▼ FALL</button>
+              </div>
+            </div>
+          ) : (
+            <button className="rf-ovpill" onClick={() => toggleOv(true)}>▲▼ Trade</button>
+          )}
+        </div>
       )}
 
       {full && (
