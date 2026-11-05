@@ -10,6 +10,19 @@ const SYMS = [
 ]
 const SYMN = Object.fromEntries(SYMS)
 const LETTERS = 'ABCDEFGHIJKL'
+const isNew = (m) => m === 'comp' || m === 'rules'
+const isPat = (m) => m === 'pattern' || isNew(m)
+// how many times in a row a digit must repeat before the bot arms
+const needFn = (c) => {
+  if (c.mode === 'rules') {
+    const rl = (c.rules || []).map((r) => ({ d: clamp(Math.round(+r.d) || 0, 0, 9), n: clamp(Math.round(+r.n) || 2, 2, 12) }))
+    return (x) => {
+      const hit = rl.filter((r) => r.d === x)
+      return hit.length ? Math.min(...hit.map((r) => r.n)) : Infinity
+    }
+  }
+  return clamp(Math.round(+c.same || 2), 2, 10)
+}
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
 const DEF_LADDER = [
   { stake: 0.35, runs: 1 }, { stake: 1, runs: 4 }, { stake: 3.75, runs: 4 },
@@ -19,6 +32,7 @@ const DEF = {
   syms: ['R_100'], mode: 'every', dur: 1, target: 'last', fixed: 5, same: 2, lock: true,
   rec: true, ladder: DEF_LADDER, end: 'restart', sl: 20, tp: 10, instant: true,
   cbase: 0.35, cmult: 11, cdiv: 4, csteps: 4, cmode: 'cum', cround: 0.05, cauto: true,
+  cstake: 1, ccomp: true, ccap: 5, cend: 'hold', cmax: 10, rules: [{ d: 2, n: 2 }, { d: 4, n: 4 }],
 }
 const loadCfg = () => {
   try { return { ...DEF, ...JSON.parse(localStorage.bbfx_differ || '{}') } } catch (e) { return DEF }
@@ -94,6 +108,7 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
   const lastEp = useRef({})
   const pt = useRef({})
   const recLock = useRef(null)
+  const compLog = useRef([])
   const lastProp = useRef(0)
   const rateUntil = useRef(0)
   const sendRef = useRef(send)
@@ -148,8 +163,24 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
       .filter((b) => isFinite(b.stake) && b.stake >= 0.35)
     return l.length ? l : DEF_LADDER
   }
-  const inRecovery = () => !!cfgRef.current.rec && levelRef.current > 0
+  const inRecovery = () => !!cfgRef.current.rec && levelRef.current > 0 && !isNew(cfgRef.current.mode)
+  const compGrowth = () => {
+    let g = 0
+    const a = compLog.current
+    for (let i = a.length - 1; i >= 0 && a[i].profit >= 0; i--) g += a[i].profit
+    return g
+  }
+  const compStake = () => {
+    const c = cfgRef.current
+    const base = Math.max(0.35, Math.round((+c.cstake || 0.35) * 100) / 100)
+    let s = c.ccomp === false ? base : Math.round((base + compGrowth()) * 100) / 100
+    let capped = false
+    const cap = +c.ccap
+    if (c.ccomp !== false && cap > 0 && s >= cap) { s = Math.max(0.35, Math.round(cap * 100) / 100); capped = true }
+    return { stake: Math.max(0.35, s), capped }
+  }
   const curStake = () => {
+    if (isNew(cfgRef.current.mode)) return compStake().stake
     const L = ladderList()
     if (!cfgRef.current.rec) return L[0].stake
     return L[Math.min(levelRef.current, L.length - 1)].stake
@@ -176,6 +207,7 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
   // ---------- ready-to-buy prices ----------
   const neededStakes = () => {
     const c = cfgRef.current
+    if (isNew(c.mode)) return [curStake()]
     const L = ladderList()
     const i = c.rec ? Math.min(levelRef.current, L.length - 1) : 0
     const out = [L[i].stake]
@@ -263,6 +295,7 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
   const fire = (sym, barrier) => {
     const c = cfgRef.current
     if (slots() >= 1) return false
+    if (isNew(c.mode) && +c.cmax > 0 && compLog.current.length >= +c.cmax) return false
     if (Date.now() < rateUntil.current) return false
     const stake = curStake()
     if (netRef.current - stake <= -Math.abs(+c.sl)) {
@@ -295,7 +328,8 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
     let armedNow = false
     if (st.x === d) {
       st.n += 1
-      if (st.n >= K && !st.armed) { st.armed = true; armedNow = true }
+      const need = typeof K === 'function' ? K(d) : K
+      if (st.n >= need && !st.armed) { st.armed = true; armedNow = true }
     } else {
       if (st.armed) ready = st.x
       st.x = d
@@ -314,8 +348,8 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
     const d = a[a.length - 1]
     if (!inRecovery()) recLock.current = null
     let ready = null
-    if (c.mode === 'pattern') {
-      const r = patStep(sym, d, clamp(Math.round(+c.same || 2), 2, 10))
+    if (isPat(c.mode)) {
+      const r = patStep(sym, d, needFn(c))
       ready = r.ready
       if (r.armedNow) ensureArmed(sym)
     }
@@ -349,11 +383,12 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
     const cf = cfgRef.current
     const wasRec = inRecovery()
     netRef.current += profit
+    if (isNew(cf.mode)) compLog.current.push({ id: cid, profit })
     let lvl = levelRef.current
     let w = winsRef.current
     let note = ''
     let endStop = false
-    if (cf.rec) {
+    if (cf.rec && !isNew(cf.mode)) {
       const L = ladderList()
       if (profit >= 0) {
         if (lvl > 0) {
@@ -375,7 +410,7 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
     levelRef.current = lvl
     winsRef.current = w
     const live = runRef.current
-    if (cf.mode === 'pattern' && !wasRec && inRecovery() && cf.lock !== false) recLock.current = { sym: o.meta.sym }
+    if (isPat(cf.mode) && !wasRec && inRecovery() && cf.lock !== false) recLock.current = { sym: o.meta.sym }
     setStats((st) => ({
       net: netRef.current, trades: st.trades + 1, wins: st.wins + (profit >= 0 ? 1 : 0),
       losses: st.losses + (profit < 0 ? 1 : 0), idx: lvl, w,
@@ -390,6 +425,10 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
     if (netRef.current <= -Math.abs(+cf.sl)) return stopBot('Stop loss reached')
     if (+cf.tp > 0 && netRef.current >= +cf.tp) return stopBot('Take profit reached')
     if (endStop) return stopBot('Reached the end of the ladder')
+    if (isNew(cf.mode)) {
+      if (+cf.cmax > 0 && compLog.current.length >= +cf.cmax) return stopBot('Finished ' + cf.cmax + ' trades')
+      if (cf.ccomp !== false && cf.cend === 'stop' && compStake().capped) return stopBot('Stake reached the limit of ' + cf.ccap)
+    }
     ensureAll()
   }
 
@@ -431,6 +470,8 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
     delete settled.current[id]
     const real = pnl(c)
     if (Number.isNaN(real)) return
+    const rec2 = compLog.current.find((x) => x.id === id)
+    if (rec2) rec2.profit = real
     const flip = (real >= 0) !== sm.win
     const ex = typeof c.exit_tick_display_value === 'string' ? +c.exit_tick_display_value.slice(-1) : NaN
     netRef.current += real - sm.profit
@@ -726,8 +767,12 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
     if (!c.syms.length) return setMsg('Pick at least one market')
     if (c.mode === 'every' && c.target === 'fixed' && !(+c.fixed >= 0 && +c.fixed <= 9)) return setMsg('Fixed digit must be 0 to 9')
     const lad = c.ladder || []
-    if (!lad.length || !(Number(lad[0].stake) >= 0.35)) return setMsg('Main stake must be at least 0.35')
-    if (c.rec) {
+    if (isNew(c.mode)) {
+      if (!(+c.cstake >= 0.35)) return setMsg('Stake must be at least 0.35')
+      if (c.mode === 'rules' && !(c.rules || []).some((r) => Number.isFinite(+r.d) && +r.n >= 2)) return setMsg('Add at least one digit rule')
+      if (c.ccomp !== false && +c.ccap > 0 && +c.ccap < +c.cstake) return setMsg('The stake limit must be at least the stake')
+    } else if (!lad.length || !(Number(lad[0].stake) >= 0.35)) return setMsg('Main stake must be at least 0.35')
+    if (c.rec && !isNew(c.mode)) {
       const bad = lad.findIndex((b) => !(Number(b.stake) >= 0.35))
       if (bad >= 0) return setMsg('Block ' + LETTERS[bad] + ' needs a stake of at least 0.35')
       if (lad.length < 2) return setMsg('Add at least one recovery block (B) or turn recovery off')
@@ -737,6 +782,7 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
     netRef.current = 0
     levelRef.current = 0
     winsRef.current = 0
+    compLog.current = []
     errs.current = 0
     pt.current = {}
     recLock.current = null
@@ -754,6 +800,10 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
     ensureAll()
   }
 
+  const rulesL = cfg.rules || []
+  const setRule = (i, p) => setC({ rules: rulesL.map((r, j) => (j === i ? { ...r, ...p } : r)) })
+  const addRule = () => setC({ rules: [...rulesL, { d: 0, n: 2 }] })
+  const delRule = (i) => setC({ rules: rulesL.filter((_, j) => j !== i) })
   const togSym = (v) =>
     setC({ syms: cfg.syms.includes(v) ? cfg.syms.filter((x) => x !== v) : [...cfg.syms, v] })
 
@@ -761,7 +811,7 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
   const arr = (wsym && digs.current[wsym]) || []
   const lad = ladderList()
   const recNow = !!cfg.rec && stats.idx > 0
-  const stakeNow = cfg.rec ? lad[Math.min(stats.idx, lad.length - 1)].stake : lad[0].stake
+  const stakeNow = isNew(cfg.mode) ? compStake().stake : cfg.rec ? lad[Math.min(stats.idx, lad.length - 1)].stake : lad[0].stake
   const openNow = Object.keys(openMap.current).length + pend.current.size
   const calcList = calcStakes(cfg)
   const calcTotal = calcList.reduce((x, y) => x + y, 0)
@@ -779,7 +829,7 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
       <section className="card">
         <div className="pcthead">
           <b>DIFFER</b>
-          <span className={'badge ' + (running ? 'on' : '')}>{running ? (cfg.mode === 'every' ? 'EVERY TICK' : 'PATTERN') : 'stopped'}</span>
+          <span className={'badge ' + (running ? 'on' : '')}>{running ? (cfg.mode === 'every' ? 'EVERY TICK' : cfg.mode === 'rules' ? 'DIGIT RULES' : cfg.mode === 'comp' ? 'COMPOUND' : 'PATTERN') : 'stopped'}</span>
         </div>
         <select value={wsym || ''} onChange={(e) => setWatch(e.target.value)} disabled={!cfg.syms.length}>
           {cfg.syms.map((v) => <option key={v} value={v}>{SYMN[v]}</option>)}
@@ -804,9 +854,10 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
         <div className="sum">
           <div><small>Net P/L</small><b className={stats.net >= 0 ? 'win' : 'loss'}>{stats.net >= 0 ? '+' : ''}{stats.net.toFixed(2)}</b></div>
           <div><small>Win / Loss</small><b>{stats.wins} / {stats.losses}</b></div>
-          <div><small>{cfg.rec ? 'Block ' + LETTERS[Math.min(stats.idx, 11)] + ' stake' : 'Stake'}</small><b>{stakeNow}</b></div>
+          <div><small>{isNew(cfg.mode) ? 'Next stake' : cfg.rec ? 'Block ' + LETTERS[Math.min(stats.idx, 11)] + ' stake' : 'Stake'}</small><b>{stakeNow}</b></div>
         </div>
         {running && <div className="muted">Open trades: {openNow} / 1{recNow ? ' · recovering' : ''}</div>}
+        {isNew(cfg.mode) && <div className="muted">Trades done: {stats.trades}{+cfg.cmax > 0 ? ' of ' + cfg.cmax : ''}{cfg.ccomp !== false && +cfg.ccap > 0 ? ' · stake limit ' + cfg.ccap : ''}</div>}
       </section>
 
       <section className="card">
@@ -815,6 +866,8 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
           <select disabled={running} value={cfg.mode} onChange={(e) => setC({ mode: e.target.value })}>
             <option value="every">Differ every tick</option>
             <option value="pattern">Pattern: 2+ same digit, wait for a winning differ</option>
+            <option value="comp">Pattern + compounding stake (wins are added)</option>
+            <option value="rules">Digit rules (2 twice, 4 four times…) + compounding stake</option>
           </select>
         </label>
         {cfg.mode === 'every' ? (
@@ -833,6 +886,35 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
               )}
             </div>
             <div className="muted">Trades Differs on every tick, one trade at a time.</div>
+          </>
+        ) : cfg.mode === 'rules' ? (
+          <>
+            {rulesL.map((r, i) => (
+              <div className="row" key={i}>
+                <label>Digit
+                  <select disabled={running} value={r.d} onChange={(e) => setRule(i, { d: +e.target.value })}>
+                    {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                </label>
+                <label>In a row (min)
+                  <input type="number" min="2" max="12" disabled={running} value={r.n} onChange={(e) => setRule(i, { n: e.target.value })} />
+                </label>
+                {!running && <button onClick={() => delRule(i)}>Remove</button>}
+              </div>
+            ))}
+            <button disabled={running || rulesL.length >= 10} onClick={addRule}>+ Add digit rule</button>
+            <div className="muted">
+              When a digit shows up as many times in a row as its rule says (for example 2 twice, or 4 four times), the bot waits for a winning differ (a different digit), then trades Differs on that digit. Other digits are ignored.
+            </div>
+          </>
+        ) : cfg.mode === 'comp' ? (
+          <>
+            <label>Same digit in a row (min)
+              <input type="number" min="2" max="10" disabled={running} value={cfg.same} onChange={(e) => setC({ same: e.target.value })} />
+            </label>
+            <div className="muted">
+              When a market shows the same digit {cfg.same || 2}+ times in a row, wait for a winning differ (a different digit), then trade Differs on the repeated digit.
+            </div>
           </>
         ) : (
           <>
@@ -857,6 +939,43 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
         </label>
       </section>
 
+      {isNew(cfg.mode) ? (
+        <section className="card">
+          <b>Stake (wins are added)</b>
+          <div className="row">
+            <label>Stake
+              <input type="number" min="0.35" step="0.05" disabled={running} value={cfg.cstake} onChange={(e) => setC({ cstake: e.target.value })} />
+            </label>
+            <label>Add wins to the next stake
+              <select disabled={running} value={cfg.ccomp === false ? 'off' : 'on'} onChange={(e) => setC({ ccomp: e.target.value === 'on' })}>
+                <option value="on">On</option>
+                <option value="off">Off (fixed stake)</option>
+              </select>
+            </label>
+          </div>
+          {cfg.ccomp !== false && (
+            <div className="row">
+              <label>Grow the stake up to (0 = no limit)
+                <input type="number" min="0" step="0.5" disabled={running} value={cfg.ccap} onChange={(e) => setC({ ccap: e.target.value })} />
+              </label>
+              <label>When it gets there
+                <select disabled={running} value={cfg.cend === 'stop' ? 'stop' : 'hold'} onChange={(e) => setC({ cend: e.target.value })}>
+                  <option value="hold">Keep trading at that stake</option>
+                  <option value="stop">Stop the bot</option>
+                </select>
+              </label>
+            </div>
+          )}
+          <label>Stop after this many trades (0 = off)
+            <input type="number" min="0" max="1000" disabled={running} value={cfg.cmax} onChange={(e) => setC({ cmax: e.target.value })} />
+          </label>
+          <div className="muted">
+            {cfg.ccomp === false
+              ? 'Every trade uses the stake above.'
+              : 'After a win, its profit is added to the next stake. For example a stake of 1 that wins 0.09 trades 1.09 next, then adds that win too. After a loss the stake goes back to the starting stake.'}
+          </div>
+        </section>
+      ) : (
       <section className="card">
         <b>Stake and recovery</b>
         <div className="row">
@@ -872,8 +991,9 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
         </div>
         {!cfg.rec && <div className="muted">Recovery is off, so every trade uses the main stake.</div>}
       </section>
+      )}
 
-      {cfg.rec && (
+      {cfg.rec && !isNew(cfg.mode) && (
         <section className="card">
           <div className="pcthead">
             <b>STAKE CALCULATOR</b>
@@ -989,7 +1109,7 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
             <input type="number" min="0" step="0.5" disabled={running} value={cfg.tp} onChange={(e) => setC({ tp: e.target.value })} />
           </label>
         </div>
-        {cfg.rec && (
+        {cfg.rec && !isNew(cfg.mode) && (
           <label>After the last block loses
             <select disabled={running} value={cfg.end} onChange={(e) => setC({ end: e.target.value })}>
               <option value="restart">Restart at A</option>
