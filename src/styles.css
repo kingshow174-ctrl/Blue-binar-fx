@@ -449,3 +449,15 @@ button:disabled{opacity:.5}
 .rf-ovtop button{padding:6px 12px;font-size:12px;border-radius:10px}
 .rf-ov.min{background:none;pointer-events:none;display:flex;justify-content:flex-end;padding-bottom:calc(86px + env(safe-area-inset-bottom,0px))}
 .rf-ovpill{pointer-events:auto;border:0;border-radius:999px;padding:12px 18px;font-weight:800;color:#fff;background:linear-gradient(135deg,#2f7bff,#7a5cff);box-shadow:0 6px 20px rgba(80,90,255,.5)}
+
+/* hist-v2 */
+.hsub{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}
+.hsub button{padding:10px 8px;border-radius:12px;font-weight:700}
+.hsub button.on{background:linear-gradient(135deg,#2f7bff,#7a5cff);color:#fff;border-color:transparent}
+.hsub i{font-style:normal;font-size:11px;margin-left:6px;padding:2px 7px;border-radius:99px;background:rgba(255,255,255,.14)}
+.hfilt{display:flex;gap:8px;margin:12px 0 4px}
+.hfilt button{padding:6px 14px;font-size:12px;border-radius:99px}
+.hfilt button.on{border-color:#3aa0ff;color:#fff;background:rgba(58,160,255,.15)}
+.hbtns{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.pl.open{color:#7ef0d4}
+.pl.unknown{color:#ffc43c}

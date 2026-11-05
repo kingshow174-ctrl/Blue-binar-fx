@@ -8,6 +8,7 @@ import Differ from './Differ.jsx'
 import Scanner from './Scanner.jsx'
 import RiseFall from './RiseFall.jsx'
 import { bus } from './bus.js'
+import HistoryTab from './HistoryTab.jsx'
 
 const APP_ID = import.meta.env.VITE_DERIV_CLIENT_ID
 const PUBLIC_WS = 'wss://api.derivws.com/trading/v1/options/ws/public'
@@ -142,7 +143,7 @@ export default function App() {
     return Number.isNaN(d) ? undefined : d
   }
 
-  useEffect(() => { localStorage.bbfx_hist = JSON.stringify(hist.slice(0, 100)) }, [hist])
+  useEffect(() => { localStorage.bbfx_hist = JSON.stringify(hist.slice(0, 500)) }, [hist])
 
   // ---------- Digit alerts (scans several markets in the background) ----------
   const [al, setAl] = useState(() => {
@@ -607,6 +608,8 @@ let rxAt = Date.now()
     const m = JSON.parse(e.data)
     if (m.echo_req && m.echo_req.ping) return
     bus.emit(m)
+    const rq = m.req_id || (m.echo_req && m.echo_req.req_id) || 0
+    if (rq >= 1700000 && rq < 1800000) return
     if (m.msg_type !== 'proposal_open_contract' && ((m.req_id || 0) >= 500 || (m.echo_req && (m.echo_req.req_id || 0) >= 500))) return
     if (m.error) {
       const meta = tradeMeta.current
@@ -649,7 +652,7 @@ let rxAt = Date.now()
       setHist((h) => [{
         id: m.buy.contract_id, t: Date.now(), symbol: meta.symbol, type: meta.type,
         barrier: meta.barrier, stake: Number(m.buy.buy_price), status: 'open',
-      }, ...h].slice(0, 100))
+      }, ...h].slice(0, 500))
       waiting.current.push({
         id: m.buy.contract_id, type: meta.type, barrier: meta.barrier, symbol: meta.symbol,
         need: meta.dur || 1, pt: m.buy.purchase_time || 0, seen: 0,
@@ -984,7 +987,7 @@ let rxAt = Date.now()
           send={trdSend}
           cur={cur}
           demo={acct ? acct.demo : true}
-          addHist={(e) => setHist((h) => [e, ...h].slice(0, 100))}
+          addHist={(e) => setHist((h) => [e, ...h].slice(0, 500))}
           updHist={(id, p) => setHist((h) => h.map((x) => (String(x.id) === String(id) ? { ...x, ...p } : x)))}
         />
       </div>
@@ -996,7 +999,7 @@ let rxAt = Date.now()
           send={trdSend}
           cur={cur}
           demo={acct ? acct.demo : true}
-          addHist={(e) => setHist((h) => [e, ...h].slice(0, 100))}
+          addHist={(e) => setHist((h) => [e, ...h].slice(0, 500))}
           updHist={(id, p) => setHist((h) => h.map((x) => (String(x.id) === String(id) ? { ...x, ...p } : x)))}
         />
       </div>
@@ -1007,7 +1010,7 @@ let rxAt = Date.now()
           send={trdSend}
           cur={cur}
           demo={acct ? acct.demo : true}
-          addHist={(e) => setHist((h) => [e, ...h].slice(0, 100))}
+          addHist={(e) => setHist((h) => [e, ...h].slice(0, 500))}
           updHist={(id, p) => setHist((h) => h.map((x) => (String(x.id) === String(id) ? { ...x, ...p } : x)))}
         />
       </div>
@@ -1018,7 +1021,7 @@ let rxAt = Date.now()
           send={trdSend}
           cur={cur}
           demo={acct ? acct.demo : true}
-          addHist={(e) => setHist((h) => [e, ...h].slice(0, 100))}
+          addHist={(e) => setHist((h) => [e, ...h].slice(0, 500))}
           updHist={(id, p) => setHist((h) => h.map((x) => (String(x.id) === String(id) ? { ...x, ...p } : x)))}
         />
       </div>
@@ -1029,7 +1032,7 @@ let rxAt = Date.now()
           send={trdSend}
           cur={cur}
           demo={acct ? acct.demo : true}
-          addHist={(e) => setHist((h) => [e, ...h].slice(0, 100))}
+          addHist={(e) => setHist((h) => [e, ...h].slice(0, 500))}
           updHist={(id, p) => setHist((h) => h.map((x) => (String(x.id) === String(id) ? { ...x, ...p } : x)))}
         />
       </div>
@@ -1041,7 +1044,7 @@ let rxAt = Date.now()
           send={trdSend}
           cur={cur}
           demo={acct ? acct.demo : true}
-          addHist={(e) => setHist((h) => [e, ...h].slice(0, 100))}
+          addHist={(e) => setHist((h) => [e, ...h].slice(0, 500))}
           updHist={(id, p) => setHist((h) => h.map((x) => (String(x.id) === String(id) ? { ...x, ...p } : x)))}
         />
       </div>
@@ -1053,35 +1056,13 @@ let rxAt = Date.now()
           send={trdSend}
           cur={cur}
           demo={acct ? acct.demo : true}
-          addHist={(e) => setHist((h) => [e, ...h].slice(0, 100))}
+          addHist={(e) => setHist((h) => [e, ...h].slice(0, 500))}
           updHist={(id, p) => setHist((h) => h.map((x) => (String(x.id) === String(id) ? { ...x, ...p } : x)))}
         />
       </div>
 
       {tab === 'history' && (
-        <section className="card">
-          <div className="sum">
-            <div><small>Trades</small><b>{closed.length}</b></div>
-            <div><small>Wins</small><b>{wins}</b></div>
-            <div><small>Net P/L</small><b className={net >= 0 ? 'win' : 'loss'}>{net >= 0 ? '+' : ''}{net.toFixed(2)}</b></div>
-          </div>
-          {!hist.length && <div className="muted">No trades yet</div>}
-          {hist.map((h) => (
-            <div className="h" key={h.id}>
-              <div>
-                <b>{NAMES[h.type] || h.type}{h.barrier != null ? ' ' + h.barrier : ''}</b>
-                <small>{SYMN[h.symbol] || h.symbol}</small>
-                <small>{fmtTime(h.t)} · stake {h.stake}{h.exit != null ? ` · hit ${h.exit}` : ''}</small>
-              </div>
-              <div className={'pl ' + h.status}>
-                {h.status === 'open' ? '...' : h.status === 'unknown' ? '?' : (h.profit >= 0 ? '+' : '') + Number(h.profit).toFixed(2)}
-              </div>
-            </div>
-          ))}
-          {hist.length > 0 && (
-            <button onClick={() => { if (confirm('Clear history?')) setHist([]) }}>Clear history</button>
-          )}
-        </section>
+        <HistoryTab hist={hist} setHist={setHist} tradeOn={tradeOn} send={trdSend} names={NAMES} symn={SYMN} fmtTime={fmtTime} />
       )}
 
       {(tab === 'trader' || tab === 'alerts') && (
