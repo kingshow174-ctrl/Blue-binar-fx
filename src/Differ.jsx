@@ -33,6 +33,7 @@ const DEF = {
   rec: true, ladder: DEF_LADDER, end: 'restart', sl: 20, tp: 10, instant: true,
   cbase: 0.35, cmult: 11, cdiv: 4, csteps: 4, cmode: 'cum', cround: 0.05, cauto: true,
   cstake: 1, ccomp: true, ccap: 5, cend: 'hold', cmax: 10, rules: [{ d: 2, n: 2 }, { d: 4, n: 4 }],
+  avoid: true, alo: 9.1, ahi: 9.9, awin: 1000,
 }
 const loadCfg = () => {
   try { return { ...DEF, ...JSON.parse(localStorage.bbfx_differ || '{}') } } catch (e) { return DEF }
@@ -109,6 +110,8 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
   const pt = useRef({})
   const recLock = useRef(null)
   const compLog = useRef([])
+  const ring = useRef({})
+  const skipAt = useRef({})
   const lastProp = useRef(0)
   const rateUntil = useRef(0)
   const sendRef = useRef(send)
@@ -164,6 +167,36 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
     return l.length ? l : DEF_LADDER
   }
   const inRecovery = () => !!cfgRef.current.rec && levelRef.current > 0 && !isNew(cfgRef.current.mode)
+  const shareOf = (sym) => {
+    const N = clamp(Math.round(+cfgRef.current.awin || 1000), 100, 5000)
+    const a = ring.current[sym] || []
+    const have = Math.min(a.length, N)
+    const cnt = new Array(10).fill(0)
+    for (let i = a.length - have; i < a.length; i++) cnt[a[i]] += 1
+    return { N, have, pct: cnt.map((x) => (have ? (x * 100) / have : 0)) }
+  }
+  // null = fine to trade. Otherwise: still collecting ticks, or the digit's share is inside the skip range
+  const avoidDigit = (sym, d) => {
+    const c = cfgRef.current
+    if (c.avoid === false) return null
+    const lo = +c.alo
+    const hi = +c.ahi
+    if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null
+    const sh = shareOf(sym)
+    if (sh.have < sh.N) return { wait: true, have: sh.have, N: sh.N }
+    const p = sh.pct[d]
+    if (p >= lo - 1e-9 && p <= hi + 1e-9) return { wait: false, pct: p, N: sh.N }
+    return null
+  }
+  const noteSkip = (sym, d, av) => {
+    const k = sym + '|' + d + '|' + (av.wait ? 'w' : 'b')
+    const now = Date.now()
+    if (now - (skipAt.current[k] || 0) < 20000) return
+    skipAt.current[k] = now
+    addLog(av.wait
+      ? 'Digit filter: collecting ticks for ' + SYMN[sym] + ' (' + av.have + '/' + av.N + '), not trading yet'
+      : 'Skipped digit ' + d + ' on ' + SYMN[sym] + ': ' + av.pct.toFixed(1) + '% of the last ' + av.N + ' ticks')
+  }
   const compGrowth = () => {
     let g = 0
     const a = compLog.current
@@ -219,10 +252,13 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
     const stakes = neededStakes()
     const ALL = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
     const digitsFor = (sym) => {
-      if (c.mode === 'every') return c.target === 'fixed' ? [clamp(Math.round(+c.fixed || 0), 0, 9)] : []
+      if (c.mode === 'every') {
+        const fx = clamp(Math.round(+c.fixed || 0), 0, 9)
+        return c.target === 'fixed' && !avoidDigit(sym, fx) ? [fx] : []
+      }
       if (inRecovery()) return []
       const st = pt.current[sym]
-      return st && st.armed ? [st.x] : []
+      return st && st.armed && !avoidDigit(sym, st.x) ? [st.x] : []
     }
     let out = []
     c.syms.forEach((sym) => digitsFor(sym).forEach((b) => stakes.forEach((stake) => {
@@ -297,6 +333,8 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
     if (slots() >= 1) return false
     if (isNew(c.mode) && +c.cmax > 0 && compLog.current.length >= +c.cmax) return false
     if (Date.now() < rateUntil.current) return false
+    const av = avoidDigit(sym, barrier)
+    if (av) { noteSkip(sym, barrier, av); return false }
     const stake = curStake()
     if (netRef.current - stake <= -Math.abs(+c.sl)) {
       stopBot('Next stake ' + stake + ' could pass your stop loss, stopped')
@@ -659,8 +697,9 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
         lastEp.current = {}
         tb.current = {}
         digs.current = {}
+        ring.current = {}
         syms.forEach((sym) => {
-          sock.send(JSON.stringify({ ticks_history: sym, count: 60, end: 'latest', style: 'ticks' }))
+          sock.send(JSON.stringify({ ticks_history: sym, count: clamp(Math.round(+cfgRef.current.awin || 1000), 100, 5000), end: 'latest', style: 'ticks' }))
           setTimeout(() => sub(sym), 3000)
         })
       }
@@ -673,7 +712,9 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
           const hh = m.history || {}
           const pp = m.pip_size ?? hh.pip_size ?? pip.current[sym] ?? 2
           pip.current[sym] = pp
-          digs.current[sym] = (hh.prices || []).map((p) => +Number(p).toFixed(pp).slice(-1)).slice(-60)
+          const all = (hh.prices || []).map((p) => +Number(p).toFixed(pp).slice(-1))
+          ring.current[sym] = all.slice(-5000)
+          digs.current[sym] = all.slice(-60)
           sub(sym)
           bump()
           return
@@ -693,6 +734,9 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
           pip.current[sym] = t.pip_size
           const d = +t.quote.toFixed(t.pip_size).slice(-1)
           digs.current[sym] = [...(digs.current[sym] || []).slice(-59), d]
+          const rg = ring.current[sym] || (ring.current[sym] = [])
+          rg.push(d)
+          if (rg.length > 5000) rg.shift()
           tickAt.current[sym] = Date.now()
           settleByTick(sym, t.epoch, d)
           evalTick(sym)
@@ -765,6 +809,7 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
     const c = cfgRef.current
     if (!tradeOnRef.current) return setMsg('Log in first')
     if (!c.syms.length) return setMsg('Pick at least one market')
+    if (c.avoid !== false && !(+c.alo <= +c.ahi)) return setMsg('Skip range: "from" must not be above "to"')
     if (c.mode === 'every' && c.target === 'fixed' && !(+c.fixed >= 0 && +c.fixed <= 9)) return setMsg('Fixed digit must be 0 to 9')
     const lad = c.ladder || []
     if (isNew(c.mode)) {
@@ -844,6 +889,20 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
           })}
         </div>
         <div className="muted">Newest top-left · green: differs from the digit before it · red: repeats it</div>
+        {cfg.avoid !== false && wsym && (() => {
+          const sh = shareOf(wsym)
+          return (
+            <>
+              <div className="calcrow">
+                {sh.pct.map((p, d) => {
+                  const bad = sh.have >= sh.N && p >= +cfg.alo - 1e-9 && p <= +cfg.ahi + 1e-9
+                  return <span key={d} className="cchip" style={bad ? { borderColor: '#ff4d5e', color: '#ff9aa8' } : undefined}><b>{d}</b>{sh.have ? p.toFixed(1) + '%' : '…'}</span>
+                })}
+              </div>
+              <div className="muted">Share of each digit in the last {sh.have}{sh.have < sh.N ? ' of ' + sh.N : ''} ticks. Red digits are skipped, the bot will not trade them.</div>
+            </>
+          )
+        })()}
       </section>
 
       <section className="card">
@@ -1116,6 +1175,28 @@ export default function Differ({ tradeOn, send, cur, demo, addHist, updHist }) {
               <option value="stop">Stop the bot</option>
             </select>
           </label>
+        )}
+        <label>Skip digits by share
+          <select disabled={running} value={cfg.avoid === false ? 'off' : 'on'} onChange={(e) => setC({ avoid: e.target.value === 'on' })}>
+            <option value="on">On: do not trade digits inside the range</option>
+            <option value="off">Off</option>
+          </select>
+        </label>
+        {cfg.avoid !== false && (
+          <>
+            <div className="row">
+              <label>Skip from (%)
+                <input type="number" min="0" max="100" step="0.1" disabled={running} value={cfg.alo} onChange={(e) => setC({ alo: e.target.value })} />
+              </label>
+              <label>to (%)
+                <input type="number" min="0" max="100" step="0.1" disabled={running} value={cfg.ahi} onChange={(e) => setC({ ahi: e.target.value })} />
+              </label>
+            </div>
+            <label>Ticks counted
+              <input type="number" min="100" max="5000" step="100" disabled={running} value={cfg.awin} onChange={(e) => setC({ awin: e.target.value })} />
+            </label>
+            <div className="muted">A digit is skipped when its share of the last {cfg.awin || 1000} ticks is from {cfg.alo}% to {cfg.ahi}%. This works in all four modes, including recovery trades. Until that many ticks are loaded the bot waits.</div>
+          </>
         )}
         <label>Result speed
           <select disabled={running} value={cfg.instant === false ? 'off' : 'on'} onChange={(e) => setC({ instant: e.target.value === 'on' })}>
