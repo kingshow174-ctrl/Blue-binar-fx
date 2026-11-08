@@ -100,6 +100,7 @@ export default function App() {
   const [hist, setHist] = useState(loadHist)
   const [notice, setNotice] = useState('')
   const [result, setResult] = useState(null)
+  const [quotes, setQuotes] = useState({})
   const [menuOpen, setMenuOpen] = useState(false)
   const topRef = useRef(null)
   const [topH, setTopH] = useState(170)
@@ -449,7 +450,12 @@ export default function App() {
               w.seen++
               if (w.seen >= w.need) {
                 w.done = true
-                setResult({ digit: dgt, win: isWin(w.type, dgt, w.barrier), profit: null })
+                const wonNow = isWin(w.type, dgt, w.barrier)
+                const okN = Number.isFinite(w.cost) && Number.isFinite(w.payout)
+                setResult({
+                  digit: dgt, win: wonNow, profit: okN ? (wonNow ? w.payout - w.cost : -w.cost) : null,
+                  ret: okN ? (wonNow ? w.payout : 0) : null,
+                })
                 showResultTimer()
                 setHist((h) => h.map((x) => (String(x.id) === String(w.id) ? { ...x, exit: dgt } : x)))
               }
@@ -643,7 +649,19 @@ let rxAt = Date.now()
         tradeMeta.current = st
         trdSend({ buy: m.proposal.id, price: Number(m.proposal.ask_price) || st.stake })
       } else if (reqType.current[rid]) {
-        armedProps.current[reqType.current[rid]] = { id: m.proposal.id, ask: m.proposal.ask_price }
+        const qt = reqType.current[rid]
+        armedProps.current[qt] = { id: m.proposal.id, ask: m.proposal.ask_price }
+        const askN = Number(m.proposal.ask_price)
+        const payN = Number(m.proposal.payout)
+        const eq = m.echo_req || {}
+        if (Number.isFinite(askN) && Number.isFinite(payN)) {
+          const nq = {
+            ask: askN, payout: payN, sym: eq.underlying_symbol, amount: Number(eq.amount),
+            dur: Number(eq.duration), barrier: eq.barrier !== undefined ? String(eq.barrier) : '',
+          }
+          setQuotes((q) => (q[qt] && q[qt].ask === nq.ask && q[qt].payout === nq.payout && q[qt].amount === nq.amount
+            && q[qt].barrier === nq.barrier && q[qt].sym === nq.sym && q[qt].dur === nq.dur ? q : { ...q, [qt]: nq }))
+        }
       }
     } else if (m.msg_type === 'buy') {
       buying.current = false
@@ -656,6 +674,7 @@ let rxAt = Date.now()
       waiting.current.push({
         id: m.buy.contract_id, type: meta.type, barrier: meta.barrier, symbol: meta.symbol,
         need: meta.dur || 1, pt: m.buy.purchase_time || 0, seen: 0,
+        cost: Number(m.buy.buy_price), payout: Number(m.buy.payout),
       })
       trdSend({ proposal_open_contract: 1, contract_id: m.buy.contract_id, subscribe: 1 })
       setArmKey((k) => k + 1)
@@ -667,7 +686,10 @@ let rxAt = Date.now()
         waiting.current = waiting.current.filter((w) => String(w.id) !== String(c.contract_id))
         setHist((h) => h.map((x) => (String(x.id) === String(c.contract_id)
           ? { ...x, status: profit >= 0 ? 'win' : 'loss', profit, exit: ex ?? x.exit } : x)))
-        setResult((r) => ({ ...(r || {}), digit: ex ?? r?.digit, win: profit >= 0, profit }))
+        const buyP = Number(c.buy_price)
+        const sellP = Number(c.sell_price)
+        const retN = profit >= 0 ? (Number.isFinite(sellP) && sellP > 0 ? sellP : Number.isFinite(buyP) ? buyP + profit : undefined) : 0
+        setResult((r) => ({ ...(r || {}), digit: ex ?? r?.digit, win: profit >= 0, profit, ret: retN !== undefined ? retN : r?.ret }))
         showResultTimer()
         if (m.subscription) trdSend({ forget: m.subscription.id })
       }
@@ -742,6 +764,13 @@ let rxAt = Date.now()
   const csecond = Math.max(-1, ...ccount.filter((c) => c < cmax))
   const clast = cd[cd.length - 1]
   const ccls = (c) => (cd.length === 0 ? '' : c === cmax ? 'g' : c === cmin ? 'r' : c === csecond ? 'b' : '')
+  const quoteOf = (type) => {
+    const q = quotes[type]
+    if (!q) return null
+    const want = hasBarrier(type) ? String(barrier) : ''
+    if (q.sym !== symbol || q.amount !== (+stake || 1) || q.dur !== (+dur || 1) || q.barrier !== want) return null
+    return <small className="bq">win +{(q.payout - q.ask).toFixed(2)} · returns {q.payout.toFixed(2)}</small>
+  }
   const cols = '110px repeat(' + al.digits.length + ', 1fr)'
 
   return (
@@ -1107,22 +1136,23 @@ let rxAt = Date.now()
                 <span>
                   {result.win ? 'WIN' : 'LOSS'}
                   {result.profit != null ? ` ${result.profit >= 0 ? '+' : ''}${Number(result.profit).toFixed(2)}` : ''}
+                  {result.win && result.ret != null ? <em className="ret">Total return {Number(result.ret).toFixed(2)}</em> : null}
                 </span>
               </div>
             )}
             {notice && <div className="notice">{notice}</div>}
             <div className="row">
               {mode === 'eo' && (<>
-                <button className="buy even" onClick={() => trade('DIGITEVEN')}>EVEN</button>
-                <button className="buy odd" onClick={() => trade('DIGITODD')}>ODD</button>
+                <button className="buy even" onClick={() => trade('DIGITEVEN')}>EVEN{quoteOf('DIGITEVEN')}</button>
+                <button className="buy odd" onClick={() => trade('DIGITODD')}>ODD{quoteOf('DIGITODD')}</button>
               </>)}
               {mode === 'md' && (<>
-                <button className="buy even" onClick={() => trade('DIGITMATCH')}>MATCHES {barrier}</button>
-                <button className="buy odd" onClick={() => trade('DIGITDIFF')}>DIFFERS {barrier}</button>
+                <button className="buy even" onClick={() => trade('DIGITMATCH')}>MATCHES {barrier}{quoteOf('DIGITMATCH')}</button>
+                <button className="buy odd" onClick={() => trade('DIGITDIFF')}>DIFFERS {barrier}{quoteOf('DIGITDIFF')}</button>
               </>)}
               {mode === 'ou' && (<>
-                <button className="buy even" onClick={() => trade('DIGITOVER')}>OVER {barrier}</button>
-                <button className="buy odd" onClick={() => trade('DIGITUNDER')}>UNDER {barrier}</button>
+                <button className="buy even" onClick={() => trade('DIGITOVER')}>OVER {barrier}{quoteOf('DIGITOVER')}</button>
+                <button className="buy odd" onClick={() => trade('DIGITUNDER')}>UNDER {barrier}{quoteOf('DIGITUNDER')}</button>
               </>)}
             </div>
           </div>

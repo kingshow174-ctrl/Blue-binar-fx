@@ -461,3 +461,7 @@ button:disabled{opacity:.5}
 .hbtns{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
 .pl.open{color:#7ef0d4}
 .pl.unknown{color:#ffc43c}
+
+/* trader-win */
+.buy .bq{display:block;font-size:12px;font-weight:700;opacity:.9;margin-top:3px}
+.result .ret{display:block;font-style:normal;font-size:12px;font-weight:700;opacity:.92}
