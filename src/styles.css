@@ -465,3 +465,9 @@ button:disabled{opacity:.5}
 /* trader-win */
 .buy .bq{display:block;font-size:12px;font-weight:700;opacity:.9;margin-top:3px}
 .result .ret{display:block;font-style:normal;font-size:12px;font-weight:700;opacity:.92}
+
+/* acct-v2 */
+.accw{display:grid;line-height:1.15}
+.accb{font-size:10px;font-weight:800;letter-spacing:1px}
+.accb.demo{color:#7ef0d4}
+.accb.real{color:#ff9aa8}

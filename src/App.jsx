@@ -497,7 +497,8 @@ export default function App() {
         const list = raw.map(norm).filter((a) => a.id)
         if (!list.length) throw new Error(JSON.stringify(j.errors || j).slice(0, 120))
         setAccounts(list)
-        setAccId((list.find((a) => a.demo) || list[0]).id)
+        const pref = localStorage.getItem('bbfx_acc')
+        setAccId((list.find((a) => a.id === pref) || list.find((a) => a.demo) || list[0]).id)
       })
       .catch((e) => {
         note('⚠ Accounts: ' + e.message)
@@ -525,6 +526,7 @@ export default function App() {
 
   useEffect(() => {
     if (!token || !accId) return
+    setBal('')
     let dead = false
     let s
     let retry
@@ -771,6 +773,12 @@ let rxAt = Date.now()
     if (q.sym !== symbol || q.amount !== (+stake || 1) || q.dur !== (+dur || 1) || q.barrier !== want) return null
     return <small className="bq">win +{(q.payout - q.ask).toFixed(2)} · returns {q.payout.toFixed(2)}</small>
   }
+  const pickAcc = (id) => {
+    const a = accounts.find((x) => x.id === id)
+    if (a && !a.demo && !(acct && !acct.demo) && !confirm('Switch to the REAL account ' + id + '? Any bot that is running will keep trading there.')) return
+    try { localStorage.bbfx_acc = id } catch (e) { /* ignore */ }
+    setAccId(id)
+  }
   const cols = '110px repeat(' + al.digits.length + ', 1fr)'
 
   return (
@@ -780,9 +788,10 @@ let rxAt = Date.now()
           <div className="menuback" onClick={() => setMenuOpen(false)} />
           <div className="menu">
             <b>Account</b>
-            <select value={accId} onChange={(e) => setAccId(e.target.value)}>
+            <select value={accId} onChange={(e) => pickAcc(e.target.value)}>
               {accounts.map((a) => <option key={a.id} value={a.id}>{a.demo ? 'DEMO' : 'REAL'} · {a.id}</option>)}
             </select>
+            <button onClick={() => { setMenuOpen(false); logout(); login({ fresh: true }) }}>Log in with a different account</button>
             <button onClick={() => { setMenuOpen(false); logout() }}>Log out</button>
           </div>
         </>
@@ -793,7 +802,7 @@ let rxAt = Date.now()
           <div className="hrow">
             <div className="acct">
             <i className={'dot ' + (token ? (tradeOn ? 'online' : 'connecting') : status)} />
-            {token ? (bal ? `${bal} ${cur}` : '...') : status}
+            <span className="accw"><span>{token ? (bal ? `${bal} ${cur}` : '...') : status}</span>{token && acct ? <small className={'accb ' + (acct.demo ? 'demo' : 'real')}>{acct.demo ? 'DEMO' : 'REAL'}</small> : null}</span>
           </div>
             {token && (
               <button className="hamb" aria-label="Menu" onClick={() => setMenuOpen((o) => !o)}>
@@ -805,7 +814,9 @@ let rxAt = Date.now()
 
         {!token && (
           <section className="card">
-            <button className="save" onClick={login}>Log in with Deriv</button>
+            <button className="save" onClick={() => login()}>Log in with Deriv</button>
+            <button onClick={() => login({ fresh: true })}>Log in with a different account</button>
+            <div className="muted left">If Deriv keeps signing you in to the same account, use the second button.</div>
           </section>
         )}
 
