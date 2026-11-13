@@ -15,6 +15,7 @@ const DEF = {
   stake: 1, rec: false, mult: 2.1, steps: 3, rend: 'restart', sl: 10, tp: 10, maxT: 0,
   instant: true, lw: 100,
   mode: 'signal', pob: 4, pub: 4, ustake: 1, pgap: 0,
+  lowOn: true, lowD: 4, maxL: 0,
 }
 const loadCfg = () => {
   try {
@@ -108,6 +109,9 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
   const pairs = useRef({})
   const pairWait = useRef(0)
   const pairSeq = useRef(0)
+  const lossN = useRef(0)
+  const lastSym = useRef('')
+  const waitLogAt = useRef(0)
   const settled = useRef({})
   const tb = useRef({})
   const lastEp = useRef({})
@@ -220,9 +224,51 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
     if (a) { forget(a.subId); delete armP.current[slot] }
     delete armLatest.current[slot]
   }
+  // share of every digit over the analysed ticks, and whether the chosen digit is the lowest
+  const lowInfo = (sym) => {
+    const c = cfgRef.current
+    const d = clamp(Math.round(+c.lowD), 0, 9)
+    const L = clamp(Math.round(+c.lw || 100), 20, 1000)
+    const a = digs.current[sym] || []
+    const have = Math.min(a.length, L)
+    const cnt = new Array(10).fill(0)
+    for (let i = a.length - have; i < a.length; i++) cnt[a[i]] += 1
+    return { d, L, have, pct: have ? (cnt[d] * 100) / have : 0, ok: have >= L && cnt[d] === Math.min(...cnt) }
+  }
+  const lowestOk = (sym) => cfgRef.current.lowOn === false || lowInfo(sym).ok
+  const armTargets = () => {
+    const c = cfgRef.current
+    const list = c.lowOn === false ? c.syms : c.syms.filter((x) => lowInfo(x).ok)
+    return list.slice(0, 4)
+  }
+  const noteWait = () => {
+    const now = Date.now()
+    if (now - waitLogAt.current < 30000) return
+    const c = cfgRef.current
+    if (c.syms.some((x) => lowestOk(x))) return
+    waitLogAt.current = now
+    addLog('⏳ No market has digit ' + clamp(Math.round(+c.lowD), 0, 9) + ' as its lowest digit, waiting')
+  }
+  const noteSwitch = (sym) => {
+    if (cfgRef.current.lowOn === false) return
+    if (lastSym.current && lastSym.current !== sym) {
+      const i = lowInfo(sym)
+      addLog('↔ Switched to ' + SYMN[sym] + ' (digit ' + i.d + ' is its lowest: ' + i.pct.toFixed(1) + '%)')
+    }
+    lastSym.current = sym
+  }
   const refreshArms = () => {
     if (isPair()) {
-      if (runRef.current) cfgRef.current.syms.forEach((sym) => ['over', 'under'].forEach((side) => ensureArm(sym, side)))
+      if (!runRef.current) return
+      const targets = armTargets()
+      Object.keys(armP.current).forEach((slot) => {
+        if (!targets.includes(slot.split('|')[0])) {
+          forget(armP.current[slot].subId)
+          delete armP.current[slot]
+          delete armLatest.current[slot]
+        }
+      })
+      targets.forEach((sym) => ['over', 'under'].forEach((side) => ensureArm(sym, side)))
       return
     }
     Object.keys(sigs.current).forEach((slot) => {
@@ -253,6 +299,7 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
     if (slots() >= 1) return false
     if (Date.now() < rateUntil.current) return false
     if (+c.maxT > 0 && doneN.current >= +c.maxT) return false
+    if (!lowestOk(sym)) { noteWait(); return false }
     const stake = curStake(side)
     if (netRef.current - stake <= -Math.abs(+c.sl)) {
       stopBot('Next stake ' + stake + ' could pass your stop loss, stopped')
@@ -262,6 +309,7 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
       sym, side, stake, type: TYPE[side], barrier: barrierOf(side), dur: +c.dur || 1,
       step: idxRef.current, t0: Date.now(), trig: (digs.current[sym] || []).slice(-4).join(''),
     }
+    noteSwitch(sym)
     const slot = sym + '|' + side
     const a = armP.current[slot]
     if (a && a.id && a.key === keyOf(side, stake)) {
@@ -283,6 +331,7 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
     const win = pr.profit >= 0
     pr.win = win
     doneN.current += 1
+    if (!win) lossN.current += 1
     const cf = cfgRef.current
     let note = ''
     let endStop = false
@@ -311,6 +360,7 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
     if (+cf.tp > 0 && netRef.current >= +cf.tp) return stopBot('Take profit reached')
     if (endStop) return stopBot('Reached the end of the recovery steps')
     if (+cf.maxT > 0 && doneN.current >= +cf.maxT) return stopBot('Finished ' + cf.maxT + ' trades')
+    if (+cf.maxL > 0 && lossN.current >= +cf.maxL) return stopBot('Stopped after ' + cf.maxL + ' losses')
     refreshArms()
   }
   const dropLeg = (meta) => {
@@ -338,6 +388,7 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
     if (slots() >= 1) return false
     if (Date.now() < rateUntil.current) return false
     if (+c.maxT > 0 && doneN.current >= +c.maxT) return false
+    if (!lowestOk(sym)) { noteWait(); return false }
     const sO = curStake('over')
     const sU = curStake('under')
     if (netRef.current - (sO + sU) <= -Math.abs(+c.sl)) {
@@ -345,6 +396,7 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
       return false
     }
     const pid = ++pairSeq.current
+    noteSwitch(sym)
     pairs.current[pid] = { left: 2, profit: 0, legs: 0, closed: false, t: Date.now() }
     ;[['over', sO], ['under', sU]].forEach(([side, stake]) => {
       const meta = {
@@ -424,6 +476,7 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
     netRef.current += profit
     if (o.meta.pair) return pairLeg(c, o, profit, ex)
     doneN.current += 1
+    if (profit < 0) lossN.current += 1
     const cf = cfgRef.current
     let note = ''
     let endStop = false
@@ -457,6 +510,7 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
     if (+cf.tp > 0 && netRef.current >= +cf.tp) return stopBot('Take profit reached')
     if (endStop) return stopBot('Reached the end of the recovery steps')
     if (+cf.maxT > 0 && doneN.current >= +cf.maxT) return stopBot('Finished ' + cf.maxT + ' trades')
+    if (+cf.maxL > 0 && lossN.current >= +cf.maxL) return stopBot('Stopped after ' + cf.maxL + ' losses')
     refreshArms()
   }
   const tryTick = (o, id, ep, d) => {
@@ -507,6 +561,7 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
       nowWin = pr ? pr.profit >= 0 : false
       flip = !!(pr && pr.closed && nowWin !== before)
     }
+    if (flip) lossN.current += nowWin ? -1 : 1
     helpers.current.updHist(id, {
       status: real >= 0 ? 'win' : 'loss', profit: real, exit: Number.isNaN(ex) ? undefined : ex,
     })
@@ -521,6 +576,7 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
     const c2 = cfgRef.current
     if (netRef.current <= -Math.abs(+c2.sl)) stopBot('Stop loss reached')
     else if (+c2.tp > 0 && netRef.current >= +c2.tp) stopBot('Take profit reached')
+    else if (+c2.maxL > 0 && lossN.current >= +c2.maxL) stopBot('Stopped after ' + c2.maxL + ' losses')
   }
 
   // ---------- messages from the trading socket ----------
@@ -797,6 +853,8 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
     netRef.current = 0
     idxRef.current = 0
     doneN.current = 0
+    lossN.current = 0
+    lastSym.current = ''
     errs.current = 0
     sigs.current = {}
     pairs.current = {}
@@ -810,7 +868,12 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
   }
 
   // ---------- screen ----------
-  const wsym = cfg.syms.includes(watch) ? watch : cfg.syms[0]
+  const lowOn = cfg.lowOn !== false
+  const lowD = clamp(Math.round(+cfg.lowD), 0, 9)
+  const scan = cfg.syms.map((x) => ({ sym: x, ...lowInfo(x) }))
+  const okSyms = scan.filter((x) => x.ok).sort((a, b) => a.pct - b.pct)
+  const bestSym = okSyms.length ? okSyms[0].sym : ''
+  const wsym = lowOn && running && bestSym ? bestSym : cfg.syms.includes(watch) ? watch : cfg.syms[0]
   const arr = (wsym && digs.current[wsym]) || []
   const pairOn = cfg.mode === 'pair'
   const ob = clamp(Math.round(+(pairOn ? cfg.pob : cfg.ob)), 0, 8)
@@ -838,8 +901,8 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
   const rUnder = ringOf('under')
   const openNow = Object.keys(openMap.current).length + pend.current.size
   const anyArmed = !pairOn && ((rOver.armed && sidesOn().includes('over')) || (rUnder.armed && sidesOn().includes('under')))
-  const phase = !running ? 'idle' : paused.current ? 'paused' : openNow > 0 ? 'trading' : anyArmed ? 'armed' : 'watching'
-  const PHASE_TXT = { idle: 'IDLE', paused: 'RECONNECTING', trading: 'TRADE OPEN', armed: 'ARMED · waiting for the winning digit', watching: pairOn ? 'PAIR MODE · buying pairs' : 'WATCHING' }
+  const phase = !running ? 'idle' : paused.current ? 'paused' : openNow > 0 ? 'trading' : anyArmed ? 'armed' : lowOn && !okSyms.length ? 'waiting' : 'watching'
+  const PHASE_TXT = { idle: 'IDLE', paused: 'RECONNECTING', trading: 'TRADE OPEN', armed: 'ARMED · waiting for the winning digit', waiting: 'WAITING · digit ' + lowD + ' is not the lowest anywhere', watching: pairOn ? 'PAIR MODE · buying pairs' : 'WATCHING' }
   const stakeL = Array.from({ length: Math.min(6, Math.max(1, Math.round(+cfg.steps || 1)) + 1) }, (_, i) => (pairOn ? stakeAt(i, 'over') + '+' + stakeAt(i, 'under') : stakeAt(i, 'over')))
   const nextStake = pairOn ? curStake('over') + ' + ' + curStake('under') : curStake('over')
   const bothLose = Array.from({ length: 10 }, (_, d) => d).filter((d) => !(d > ob) && !(d < ub))
@@ -973,6 +1036,32 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
             <button key={v} className={cfg.syms.includes(v) ? 'on' : ''} disabled={running} onClick={() => togSym(v)}>{l}</button>
           ))}
         </div>
+        <div className="ou-pick">
+          <label>Pick the market automatically
+            <select disabled={running} value={lowOn ? 'on' : 'off'} onChange={(e) => setC({ lowOn: e.target.value === 'on' })}>
+              <option value="on">On: only where the digit below is the lowest</option>
+              <option value="off">Off: trade every market I picked</option>
+            </select>
+          </label>
+          {lowOn && (
+            <label>Digit that must be the lowest
+              <input type="number" min="0" max="9" disabled={running} value={cfg.lowD} onChange={(e) => setC({ lowD: e.target.value })} />
+            </label>
+          )}
+          <button disabled={running} onClick={() => setC({ syms: SYMS.map((x) => x[0]) })}>Select all markets</button>
+        </div>
+        {lowOn && (
+          <div className="ou-scan">
+            {scan.map((x) => (
+              <div key={x.sym} className={'r' + (x.ok ? ' ok' : '') + (running && x.sym === wsym ? ' act' : '')}>
+                <span className="nm">{SYMN[x.sym]}</span>
+                <span className="pc">{x.have >= x.L ? 'digit ' + lowD + ': ' + x.pct.toFixed(1) + '%' : 'loading ' + x.have + '/' + x.L}</span>
+                <span className={'tg' + (x.ok ? ' g' : '')}>{x.have < x.L ? '…' : x.ok ? 'LOWEST' : 'not lowest'}</span>
+              </div>
+            ))}
+            <div className="ou-note">{cfg.syms.length < 2 ? 'Pick two or more markets so the bot can switch between them. ' : ''}{okSyms.length ? 'The bot trades on ' + okSyms.map((x) => SYMN[x.sym]).join(', ') + ' while digit ' + lowD + ' is its lowest.' : 'No market has digit ' + lowD + ' as its lowest digit right now. The bot waits.'}</div>
+          </div>
+        )}
         <button className={'ou-go ' + (running ? 'stop' : '')} onClick={() => (running ? stopBot('') : start())}>
           {running ? 'STOP BOT' : 'START BOT'}
         </button>
@@ -1098,6 +1187,9 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
           </label>
           <label>{pairOn ? 'Stop after pairs (0 = off)' : 'Stop after trades (0 = off)'}
             <input type="number" min="0" max="1000" disabled={running} value={cfg.maxT} onChange={(e) => setC({ maxT: e.target.value })} />
+          </label>
+          <label>{pairOn ? 'Stop after lost pairs (0 = off)' : 'Stop after losses (0 = off)'}
+            <input type="number" min="0" max="1000" disabled={running} value={cfg.maxL} onChange={(e) => setC({ maxL: e.target.value })} />
           </label>
           <label>Result speed
             <select disabled={running} value={cfg.instant === false ? 'safe' : 'instant'} onChange={(e) => setC({ instant: e.target.value === 'instant' })}>
