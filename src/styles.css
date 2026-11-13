@@ -609,3 +609,9 @@ button:disabled{opacity:.5}
 .ou-scan .pc{color:#9cb7e8}
 .ou-scan .tg{padding:3px 9px;border-radius:99px;font-size:10px;font-weight:800;letter-spacing:.8px;background:rgba(255,255,255,.08);color:#9cb7e8}
 .ou-scan .tg.g{background:rgba(25,195,126,.2);color:#8ff0bf}
+
+/* ou-v4 */
+.ou-steps{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:12px}
+.ou-steps span{padding:9px 4px;border-radius:12px;text-align:center;font-size:11px;font-weight:800;background:rgba(255,255,255,.05);color:#8fb0e8;border:1px solid rgba(255,255,255,.08)}
+.ou-steps .on{color:#fff;background:linear-gradient(135deg,#2f7bff,#7a5cff);border-color:transparent}
+.ou-steps .done{color:#8ff0bf;border-color:rgba(25,195,126,.45)}
