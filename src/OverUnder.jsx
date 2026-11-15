@@ -17,6 +17,7 @@ const DEF = {
   mode: 'signal', pob: 4, pub: 4, ustake: 1, pgap: 0,
   lowOn: true, lowD: 4, maxL: 0,
   entry: 'touch', touchD: 4, tpause: false,
+  sentry: 'now', stouch: 5, stpause: false,
 }
 const loadCfg = () => {
   try {
@@ -211,6 +212,7 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
   const ensureArm = (sym, side) => {
     if (!runRef.current || !tradeOnRef.current || paused.current) return
     if (Date.now() < rateUntil.current) return
+    if (gateState(sym) === 'touch') return
     const slot = sym + '|' + side
     const key = keyOf(side, curStake(side))
     const a = armP.current[slot]
@@ -238,8 +240,14 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
     return { d, L, have, pct: have ? (cnt[d] * 100) / have : 0, ok: have >= L && cnt[d] === Math.min(...cnt) }
   }
   const lowestOk = (sym) => cfgRef.current.lowOn === false || lowInfo(sym).ok
-  const gateOn = () => cfgRef.current.mode === 'pair' && cfgRef.current.entry !== 'now'
-  const gateDigit = () => clamp(Math.round(+cfgRef.current.touchD), 0, 9)
+  const gateOn = () => {
+    const c = cfgRef.current
+    return c.mode === 'pair' ? c.entry !== 'now' : c.sentry === 'touch'
+  }
+  const gateDigit = () => {
+    const c = cfgRef.current
+    return clamp(Math.round(+(c.mode === 'pair' ? c.touchD : c.stouch)), 0, 9)
+  }
   const gateState = (sym) => (gateOn() ? gate.current[sym] || 'touch' : 'open')
   const gateTick = (sym, d) => {
     if (!gateOn()) return
@@ -250,8 +258,8 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
     if (st === 'touch') {
       if (d === td) next = 'win'
     } else if (st === 'win') {
-      if (d !== td && (d > +c.pob || d < +c.pub)) next = 'open'
-    } else if (d === td && c.tpause) next = 'win'
+      if (d !== td && (d > +(c.mode === 'pair' ? c.pob : c.ob) || d < +(c.mode === 'pair' ? c.pub : c.ub))) next = 'open'
+    } else if (d === td && (c.mode === 'pair' ? c.tpause : c.stpause)) next = 'win'
     if (next === st) return
     gate.current[sym] = next
     if (next === 'win') addLog('🎯 ' + SYMN[sym] + ' touched ' + td + (st === 'open' ? ' again, paused' : '') + ', waiting for a winning digit')
@@ -321,6 +329,7 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
     if (slots() >= 1) return false
     if (Date.now() < rateUntil.current) return false
     if (+c.maxT > 0 && doneN.current >= +c.maxT) return false
+    if (gateState(sym) !== 'open') return false
     if (!lowestOk(sym)) { noteWait(); return false }
     const stake = curStake(side)
     if (netRef.current - stake <= -Math.abs(+c.sl)) {
@@ -455,6 +464,7 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
       firePair(sym)
       return
     }
+    gateTick(sym, d)
     const need = clamp(Math.round(+c.waitW || 1), 1, 5)
     sidesOn().forEach((side) => {
       const st = sg(sym, side)
@@ -872,6 +882,7 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
       if (!(+c.ob >= 0 && +c.ob <= 8)) return setMsg('Over needs a digit from 0 to 8')
       if (!(+c.ub >= 1 && +c.ub <= 9)) return setMsg('Under needs a digit from 1 to 9')
       if (!(Math.round(+c.cnt) >= 2) || Math.round(+c.cnt) > N) return setMsg('The count must be between 2 and ' + N)
+      if (c.sentry === 'touch' && !(+c.stouch >= 0 && +c.stouch <= 9)) return setMsg('The digit to touch must be 0 to 9')
     }
     if (!(+c.stake >= 0.35)) return setMsg('Stake must be at least 0.35')
     if (!(+c.sl > 0)) return setMsg('Set a stop loss above 0')
@@ -884,7 +895,7 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
     gate.current = {}
     c.syms.forEach((x) => {
       const a = digs.current[x] || []
-      gate.current[x] = a.length && a[a.length - 1] === clamp(Math.round(+c.touchD), 0, 9) ? 'win' : 'touch'
+      gate.current[x] = a.length && a[a.length - 1] === gateDigit() ? 'win' : 'touch'
     })
     errs.current = 0
     sigs.current = {}
@@ -905,8 +916,8 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
   const okSyms = scan.filter((x) => x.ok).sort((a, b) => a.pct - b.pct)
   const bestSym = okSyms.length ? okSyms[0].sym : ''
   const wsym = lowOn && running && bestSym ? bestSym : cfg.syms.includes(watch) ? watch : cfg.syms[0]
-  const gateUI = cfg.mode === 'pair' && cfg.entry !== 'now'
-  const gdig = clamp(Math.round(+cfg.touchD), 0, 9)
+  const gateUI = cfg.mode === 'pair' ? cfg.entry !== 'now' : cfg.sentry === 'touch'
+  const gdig = clamp(Math.round(+(cfg.mode === 'pair' ? cfg.touchD : cfg.stouch)), 0, 9)
   const gst = wsym ? gateState(wsym) : 'touch'
   const arr = (wsym && digs.current[wsym]) || []
   const pairOn = cfg.mode === 'pair'
@@ -935,8 +946,8 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
   const rUnder = ringOf('under')
   const openNow = Object.keys(openMap.current).length + pend.current.size
   const anyArmed = !pairOn && ((rOver.armed && sidesOn().includes('over')) || (rUnder.armed && sidesOn().includes('under')))
-  const phase = !running ? 'idle' : paused.current ? 'paused' : openNow > 0 ? 'trading' : anyArmed ? 'armed' : lowOn && !okSyms.length ? 'waiting' : gateUI && gst !== 'open' ? 'waiting' : 'watching'
-  const PHASE_TXT = { idle: 'IDLE', paused: 'RECONNECTING', trading: 'TRADE OPEN', armed: 'ARMED · waiting for the winning digit', waiting: lowOn && !okSyms.length ? 'WAITING · digit ' + lowD + ' is not the lowest anywhere' : gst === 'touch' ? 'WAITING · for a touch of ' + gdig : 'WAITING · touched ' + gdig + ', now a winning digit', watching: pairOn ? 'PAIR MODE · buying pairs' : 'WATCHING' }
+  const phase = !running ? 'idle' : paused.current ? 'paused' : openNow > 0 ? 'trading' : gateUI && gst !== 'open' ? 'waiting' : anyArmed ? 'armed' : lowOn && !okSyms.length ? 'waiting' : 'watching'
+  const PHASE_TXT = { idle: 'IDLE', paused: 'RECONNECTING', trading: 'TRADE OPEN', armed: 'ARMED · waiting for the winning digit', waiting: gateUI && gst !== 'open' ? (gst === 'touch' ? 'WAITING · for a touch of ' + gdig : 'WAITING · touched ' + gdig + ', now a winning digit') : 'WAITING · digit ' + lowD + ' is not the lowest anywhere', watching: pairOn ? 'PAIR MODE · buying pairs' : 'WATCHING' }
   const stakeL = Array.from({ length: Math.min(6, Math.max(1, Math.round(+cfg.steps || 1)) + 1) }, (_, i) => (pairOn ? stakeAt(i, 'over') + '+' + stakeAt(i, 'under') : stakeAt(i, 'over')))
   const nextStake = pairOn ? curStake('over') + ' + ' + curStake('under') : curStake('over')
   const bothLose = Array.from({ length: 10 }, (_, d) => d).filter((d) => !(d > ob) && !(d < ub))
@@ -1013,6 +1024,13 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
           <Ring id="o" label={'Unders → Over ' + ob} sub={'digits 0-' + ob} n={rOver.c} k={K} state={rOver.state} off={cfg.side === 'under'} />
           <Ring id="u" label={'Overs → Under ' + ub} sub={'digits ' + ub + '-9'} n={rUnder.c} k={K} state={rUnder.state} off={cfg.side === 'over'} />
         </div>
+        {gateUI && (
+          <div className="ou-steps">
+            <span className={gst === 'touch' ? 'on' : 'done'}>1 · touch {gdig}</span>
+            <span className={gst === 'win' ? 'on' : gst === 'open' ? 'done' : ''}>2 · winning digit</span>
+            <span className={gst === 'open' ? 'on' : ''}>3 · signals run</span>
+          </div>
+        )}
         <div className="ou-note">
           {anyArmed
             ? 'Signal armed. The bot buys on the next winning digit' + (wN > 1 ? ' (' + wN + ' in a row)' : '') + '.'
@@ -1194,10 +1212,32 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
             <input type="number" min="1" max="10" disabled={running} value={cfg.dur} onChange={(e) => setC({ dur: e.target.value })} />
           </label>
         </div>
+        <div className="ou-grid">
+          <label>Start
+            <select disabled={running} value={cfg.sentry === 'touch' ? 'touch' : 'now'} onChange={(e) => setC({ sentry: e.target.value })}>
+              <option value="now">Right away</option>
+              <option value="touch">After a touch of a digit, then a winning digit</option>
+            </select>
+          </label>
+          {cfg.sentry === 'touch' && (
+            <label>Digit to touch
+              <input type="number" min="0" max="9" disabled={running} value={cfg.stouch} onChange={(e) => setC({ stouch: e.target.value })} />
+            </label>
+          )}
+        </div>
+        {cfg.sentry === 'touch' && (
+          <label>When the digit shows up again while running
+            <select disabled={running} value={cfg.stpause ? 'pause' : 'keep'} onChange={(e) => setC({ stpause: e.target.value === 'pause' })}>
+              <option value="keep">Keep running</option>
+              <option value="pause">Pause, then wait for a winning digit</option>
+            </select>
+          </label>
+        )}
         <div className="ou-how">
           <b>How it trades</b>
           <span>If {K} of the last {N} ticks are 0-{ob}, wait for {wN > 1 ? wN + ' winning digits in a row' : 'a winning digit'} (above {ob}), then buy <em>Over {ob}</em>.</span>
           <span>If {K} of the last {N} ticks are {ub}-9, wait for {wN > 1 ? wN + ' winning digits in a row' : 'a winning digit'} (below {ub}), then buy <em>Under {ub}</em>.</span>
+          {cfg.sentry === 'touch' && <span>Entry: nothing is traded until the market shows a {gdig}, then a winning digit. After that the signals above run{cfg.stpause ? ', and it pauses again each time a ' + gdig + ' shows up' : ' and keep running'}.</span>}
           <span>After a trade the count starts again, so each signal needs {K} fresh ticks.</span>
         </div>
           </>
