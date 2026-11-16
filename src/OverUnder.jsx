@@ -18,6 +18,7 @@ const DEF = {
   lowOn: true, lowD: 4, maxL: 0,
   entry: 'touch', touchD: 4, tpause: false,
   sentry: 'now', stouch: 5, stpause: false,
+  sboth: false,
 }
 const loadCfg = () => {
   try {
@@ -173,7 +174,7 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
     return Math.max(0.35, Math.round(baseStake(side) * Math.pow(+c.mult || 1, i) * 100) / 100)
   }
   const curStake = (side) => stakeAt(idxRef.current, side)
-  const sidesOn = () => (cfgRef.current.mode === 'pair' || cfgRef.current.side === 'both' ? ['over', 'under'] : cfgRef.current.side === 'over' ? ['over'] : ['under'])
+  const sidesOn = () => (cfgRef.current.mode === 'pair' || cfgRef.current.sboth || cfgRef.current.side === 'both' ? ['over', 'under'] : cfgRef.current.side === 'over' ? ['over'] : ['under'])
   const barrierOf = (side) => {
     const c = cfgRef.current
     const p = c.mode === 'pair'
@@ -303,7 +304,10 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
     }
     Object.keys(sigs.current).forEach((slot) => {
       const [sym, side] = slot.split('|')
-      if (sigs.current[slot].armed) ensureArm(sym, side)
+      if (sigs.current[slot].armed) {
+        ensureArm(sym, side)
+        if (cfgRef.current.sboth) ensureArm(sym, side === 'over' ? 'under' : 'over')
+      }
     })
   }
 
@@ -472,11 +476,16 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
       const wins = side === 'over' ? d > B : d < B
       if (st.armed) {
         st.w = wins ? st.w + 1 : 0
-        if (st.w >= need && fire(sym, side)) {
-          st.armed = false
-          st.w = 0
-          st.resetTn = n
-          disarm(sym, side)
+        if (st.w >= need && (c.sboth ? firePair(sym) : fire(sym, side))) {
+          sidesOn().forEach((sd) => {
+            if (c.sboth || sd === side) {
+              const o = sg(sym, sd)
+              o.armed = false
+              o.w = 0
+              o.resetTn = n
+              disarm(sym, sd)
+            }
+          })
         }
         return
       }
@@ -492,6 +501,7 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
         addLog('🔔 ' + SYMN[sym] + ': ' + cnt + ' of the last ' + len + ' ticks were ' + (side === 'over' ? '0-' + B : B + '-9') + ', waiting for a ' + (side === 'over' ? 'digit above ' + B : 'digit below ' + B))
         if (navigator.vibrate) navigator.vibrate(60)
         ensureArm(sym, side)
+        if (c.sboth) ensureArm(sym, side === 'over' ? 'under' : 'over')
       }
     })
   }
@@ -921,6 +931,7 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
   const gst = wsym ? gateState(wsym) : 'touch'
   const arr = (wsym && digs.current[wsym]) || []
   const pairOn = cfg.mode === 'pair'
+  const pairLike = pairOn || cfg.sboth === true
   const ob = clamp(Math.round(+(pairOn ? cfg.pob : cfg.ob)), 0, 8)
   const ub = clamp(Math.round(+(pairOn ? cfg.pub : cfg.ub)), 1, 9)
   const sample = arr.slice(-LW)
@@ -948,12 +959,12 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
   const anyArmed = !pairOn && ((rOver.armed && sidesOn().includes('over')) || (rUnder.armed && sidesOn().includes('under')))
   const phase = !running ? 'idle' : paused.current ? 'paused' : openNow > 0 ? 'trading' : gateUI && gst !== 'open' ? 'waiting' : anyArmed ? 'armed' : lowOn && !okSyms.length ? 'waiting' : 'watching'
   const PHASE_TXT = { idle: 'IDLE', paused: 'RECONNECTING', trading: 'TRADE OPEN', armed: 'ARMED · waiting for the winning digit', waiting: gateUI && gst !== 'open' ? (gst === 'touch' ? 'WAITING · for a touch of ' + gdig : 'WAITING · touched ' + gdig + ', now a winning digit') : 'WAITING · digit ' + lowD + ' is not the lowest anywhere', watching: pairOn ? 'PAIR MODE · buying pairs' : 'WATCHING' }
-  const stakeL = Array.from({ length: Math.min(6, Math.max(1, Math.round(+cfg.steps || 1)) + 1) }, (_, i) => (pairOn ? stakeAt(i, 'over') + '+' + stakeAt(i, 'under') : stakeAt(i, 'over')))
-  const nextStake = pairOn ? curStake('over') + ' + ' + curStake('under') : curStake('over')
+  const stakeL = Array.from({ length: Math.min(6, Math.max(1, Math.round(+cfg.steps || 1)) + 1) }, (_, i) => (pairLike ? stakeAt(i, 'over') + '+' + stakeAt(i, 'under') : stakeAt(i, 'over')))
+  const nextStake = pairLike ? curStake('over') + ' + ' + curStake('under') : curStake('over')
   const bothLose = Array.from({ length: 10 }, (_, d) => d).filter((d) => !(d > ob) && !(d < ub))
   const bothWin = Array.from({ length: 10 }, (_, d) => d).filter((d) => d > ob && d < ub)
   const pctOf = (ds) => (sample.length ? (sample.filter((d) => ds.includes(d)).length / sn) * 100 : 0)
-  const sideTxt = cfg.side === 'both' ? 'both sides' : cfg.side === 'over' ? 'Over only' : 'Under only'
+  const sideTxt = cfg.sboth ? 'Over + Under together' : cfg.side === 'both' ? 'either side' : cfg.side === 'over' ? 'Over only' : 'Under only'
   const wN = clamp(Math.round(+cfg.waitW || 1), 1, 5)
   const zone = (d) => (pairOn ? (d > ob && d < ub ? 'w' : d > ob ? 'w' : d < ub ? 'v' : 'u') : d <= ob && cfg.side !== 'under' ? 'u' : d >= ub && cfg.side !== 'over' ? 'o' : '')
 
@@ -1130,7 +1141,7 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
           <div><small>Win / Loss</small><b>{stats.wins} / {stats.losses}</b></div>
           <div><small>Next stake</small><b>{nextStake}</b></div>
         </div>
-        <div className="ou-note">Open {pairOn ? 'pairs' : 'trades'}: {openNow > 0 ? 1 : 0} / 1 · {pairOn ? 'pairs' : 'trades'} done {stats.trades}{+cfg.maxT > 0 ? ' of ' + cfg.maxT : ''}</div>
+        <div className="ou-note">Open {pairLike ? 'pairs' : 'trades'}: {openNow > 0 ? 1 : 0} / 1 · {pairLike ? 'pairs' : 'trades'} done {stats.trades}{+cfg.maxT > 0 ? ' of ' + cfg.maxT : ''}</div>
       </section>
 
       <section className="ou-card">
@@ -1188,7 +1199,7 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
         ) : (
           <>
         <div className="ou-seg">
-          {[['both', 'Both'], ['over', 'Over'], ['under', 'Under']].map(([k, l]) => (
+          {[['both', 'Either side'], ['over', 'Over'], ['under', 'Under']].map(([k, l]) => (
             <button key={k} className={cfg.side === k ? 'on' : ''} disabled={running} onClick={() => setC({ side: k })}>{l}</button>
           ))}
         </div>
@@ -1212,6 +1223,12 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
             <input type="number" min="1" max="10" disabled={running} value={cfg.dur} onChange={(e) => setC({ dur: e.target.value })} />
           </label>
         </div>
+        <label>When a signal fires
+          <select disabled={running} value={cfg.sboth ? 'both' : 'one'} onChange={(e) => setC({ sboth: e.target.value === 'both' })}>
+            <option value="one">Buy only that side</option>
+            <option value="both">Buy Over and Under together</option>
+          </select>
+        </label>
         <div className="ou-grid">
           <label>Start
             <select disabled={running} value={cfg.sentry === 'touch' ? 'touch' : 'now'} onChange={(e) => setC({ sentry: e.target.value })}>
@@ -1238,6 +1255,7 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
           <span>If {K} of the last {N} ticks are 0-{ob}, wait for {wN > 1 ? wN + ' winning digits in a row' : 'a winning digit'} (above {ob}), then buy <em>Over {ob}</em>.</span>
           <span>If {K} of the last {N} ticks are {ub}-9, wait for {wN > 1 ? wN + ' winning digits in a row' : 'a winning digit'} (below {ub}), then buy <em>Under {ub}</em>.</span>
           {cfg.sentry === 'touch' && <span>Entry: nothing is traded until the market shows a {gdig}, then a winning digit. After that the signals above run{cfg.stpause ? ', and it pauses again each time a ' + gdig + ' shows up' : ' and keep running'}.</span>}
+          {cfg.sboth && <span>Over {ob} and Under {ub} are bought together on every signal, so a trade only loses on {bothLose.length ? 'the digits that lose both: ' + bothLose.join(', ') : 'no digit at all (both win on ' + bothWin.join(', ') + ')'}. Each pair counts as one trade.</span>}
           <span>After a trade the count starts again, so each signal needs {K} fresh ticks.</span>
         </div>
           </>
@@ -1288,10 +1306,10 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
           <label>Take profit (0 = off)
             <input type="number" min="0" step="0.5" disabled={running} value={cfg.tp} onChange={(e) => setC({ tp: e.target.value })} />
           </label>
-          <label>{pairOn ? 'Stop after pairs (0 = off)' : 'Stop after trades (0 = off)'}
+          <label>{pairLike ? 'Stop after pairs (0 = off)' : 'Stop after trades (0 = off)'}
             <input type="number" min="0" max="1000" disabled={running} value={cfg.maxT} onChange={(e) => setC({ maxT: e.target.value })} />
           </label>
-          <label>{pairOn ? 'Stop after lost pairs (0 = off)' : 'Stop after losses (0 = off)'}
+          <label>{pairLike ? 'Stop after lost pairs (0 = off)' : 'Stop after losses (0 = off)'}
             <input type="number" min="0" max="1000" disabled={running} value={cfg.maxL} onChange={(e) => setC({ maxL: e.target.value })} />
           </label>
           <label>Result speed
