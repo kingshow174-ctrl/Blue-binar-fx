@@ -615,3 +615,19 @@ button:disabled{opacity:.5}
 .ou-steps span{padding:9px 4px;border-radius:12px;text-align:center;font-size:11px;font-weight:800;background:rgba(255,255,255,.05);color:#8fb0e8;border:1px solid rgba(255,255,255,.08)}
 .ou-steps .on{color:#fff;background:linear-gradient(135deg,#2f7bff,#7a5cff);border-color:transparent}
 .ou-steps .done{color:#8ff0bf;border-color:rgba(25,195,126,.45)}
+
+/* ou-v5 */
+.ou-man{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
+.ou-man button{padding:16px 8px;border-radius:18px;border:0;display:grid;gap:4px;font-weight:900}
+.ou-man .o{background:linear-gradient(135deg,#35e6a0,#19c37e);color:#04201a}
+.ou-man .u{background:linear-gradient(135deg,#4aa3ff,#2f6bff);color:#fff}
+.ou-man b{font-size:17px}
+.ou-man small{font-size:11px;font-weight:700;opacity:.85}
+.ou-both2{margin-top:10px;width:100%;padding:14px;border-radius:18px;border:0;display:grid;gap:3px;background:linear-gradient(135deg,#8a5cff,#c04bff);color:#fff;font-weight:900}
+.ou-both2 b{font-size:15px}
+.ou-both2 small{font-size:11px;font-weight:700;opacity:.9}
+.ou-man button:disabled,.ou-both2:disabled{opacity:.45}
+.ou-mres{margin-top:12px;padding:12px;border-radius:14px;text-align:center;font-weight:900;background:rgba(255,255,255,.06);color:#cfe0ff}
+.ou-mres.win{background:rgba(25,195,126,.16);color:#8ff0bf}
+.ou-mres.loss{background:rgba(255,77,94,.14);color:#ff9aa8}
+.ou-mres em{display:block;font-style:normal;font-size:12px;opacity:.9;margin-top:2px}

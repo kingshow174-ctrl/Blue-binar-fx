@@ -19,6 +19,7 @@ const DEF = {
   entry: 'touch', touchD: 4, tpause: false,
   sentry: 'now', stouch: 5, stpause: false,
   sboth: false,
+  mstake: 1,
 }
 const loadCfg = () => {
   try {
@@ -90,6 +91,9 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
   const [log, setLog] = useState([])
   const [msg, setMsg] = useState('')
   const [watch, setWatch] = useState('')
+  const [mstats, setMstats] = useState({ net: 0, wins: 0, losses: 0 })
+  const [mres, setMres] = useState(null)
+  const [mq, setMq] = useState({})
 
   const cfgRef = useRef(cfg)
   const runRef = useRef(false)
@@ -114,6 +118,12 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
   const pairSeq = useRef(0)
   const lossN = useRef(0)
   const gate = useRef({})
+  const mArm = useRef({})
+  const mLatest = useRef({})
+  const mArmP = useRef({})
+  const mPairs = useRef({})
+  const mTries = useRef({})
+  const wsymRef = useRef('')
   const lastSym = useRef('')
   const waitLogAt = useRef(0)
   const settled = useRef({})
@@ -181,7 +191,10 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
     return side === 'over' ? +(p ? c.pob : c.ob) : +(p ? c.pub : c.ub)
   }
   const keyOf = (side, stake) => [TYPE[side], barrierOf(side), +cfgRef.current.dur || 1, stake, curRef.current].join('|')
-  const slots = () => Object.keys(openMap.current).length + pend.current.size + holds.current
+  const isMan = (m) => !!(m && m.manual)
+  const botOpen = () => Object.values(openMap.current).filter((o) => !isMan(o.meta)).length
+    + [...pend.current].filter((rid) => { const r = reqs.current[rid]; return !(r && isMan(r.meta)) }).length
+  const slots = () => botOpen() + holds.current
   const forget = (id) => { if (id) sendRef.current({ forget: id }) }
   const sg = (sym, side) => sigs.current[sym + '|' + side] || (sigs.current[sym + '|' + side] = { armed: false, w: 0, resetTn: -1e9 })
 
@@ -506,6 +519,107 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
     })
   }
 
+  // ---------- manual trading ----------
+  const mStake = () => Math.max(0.35, Math.round((+cfgRef.current.mstake || 0.35) * 100) / 100)
+  const mKey = (side, sym, stake) => [sym, TYPE[side], barrierOf(side), +cfgRef.current.dur || 1, stake, curRef.current].join('|')
+  const mArmOne = (side) => {
+    const sym = wsymRef.current
+    if (!sym) return
+    const stake = mStake()
+    const rid = ++seq.current
+    mArm.current[rid] = { side, key: mKey(side, sym, stake) }
+    mLatest.current[side] = rid
+    sendRef.current({
+      proposal: 1, subscribe: 1, req_id: rid, amount: stake, basis: 'stake',
+      contract_type: TYPE[side], currency: curRef.current || 'USD', duration: +cfgRef.current.dur || 1,
+      duration_unit: 't', underlying_symbol: sym, barrier: String(barrierOf(side)),
+    })
+  }
+  const mRearm = () => {
+    if (!tradeOnRef.current) return
+    ;['over', 'under'].forEach((side) => {
+      const a = mArmP.current[side]
+      if (a && a.key === mKey(side, wsymRef.current, mStake())) return
+      if (a) { forget(a.subId); delete mArmP.current[side] }
+      mArmOne(side)
+    })
+  }
+  const mRelease = () => {
+    Object.values(mArmP.current).forEach((a) => forget(a.subId))
+    mArmP.current = {}
+    mLatest.current = {}
+  }
+  const manualClose = (id) => {
+    const p = mPairs.current[id]
+    if (!p || p.closed) return
+    p.closed = true
+    if (!p.legs) return
+    const win = p.profit >= 0
+    setMstats((st) => ({ ...st, wins: st.wins + (win ? 1 : 0), losses: st.losses + (win ? 0 : 1) }))
+    setMres({ text: 'Pair ' + (win ? 'WIN +' : 'LOSS ') + p.profit.toFixed(2), win, ret: win && p.ret > 0 ? p.ret : null, t: Date.now() })
+    addLog('🖐 Pair ' + (win ? 'WIN +' : 'LOSS ') + p.profit.toFixed(2) + (p.ret > 0 ? ' · total return ' + p.ret.toFixed(2) : ''))
+    bump()
+  }
+  const manualDrop = (meta) => {
+    if (!meta.mp) return
+    const p = mPairs.current[meta.mp]
+    if (!p) return
+    p.left -= 1
+    if (p.left <= 0) manualClose(meta.mp)
+  }
+  const manualResult = (c, o, profit, ex) => {
+    const win = profit >= 0
+    const ret = win && Number.isFinite(o.cost) ? o.cost + profit : 0
+    addLog(
+      '🖐 ' + (win ? '✅ ' : '❌ ') + (o.meta.side === 'over' ? 'Over ' : 'Under ') + o.meta.barrier + ' · stake ' + o.meta.stake +
+      (ex == null || Number.isNaN(ex) ? '' : ' · exit ' + ex) + ' · ' + (win ? '+' : '') + profit.toFixed(2) + (ret > 0 ? ' · total return ' + ret.toFixed(2) : '')
+    )
+    setMstats((st) => ({ ...st, net: st.net + profit }))
+    if (o.meta.mp) {
+      const p = mPairs.current[o.meta.mp]
+      if (p) {
+        p.profit += profit
+        p.ret += ret
+        p.legs += 1
+        p.left -= 1
+        if (p.left <= 0) manualClose(o.meta.mp)
+      }
+      return
+    }
+    setMstats((st) => ({ ...st, wins: st.wins + (win ? 1 : 0), losses: st.losses + (win ? 0 : 1) }))
+    setMres({ text: (win ? 'WIN +' : 'LOSS ') + profit.toFixed(2), win, ret: ret > 0 ? ret : null, t: Date.now() })
+    bump()
+  }
+  const manualBuy = (sides) => {
+    const c = cfgRef.current
+    const sym = wsymRef.current
+    const say = (text) => setMres({ text, win: null, ret: null, t: Date.now() })
+    if (!tradeOnRef.current) return say('Log in first')
+    if (!(+c.mstake >= 0.35)) return say('Stake must be at least 0.35')
+    if (!sym) return say('No market selected')
+    if (Date.now() < rateUntil.current) return say('Deriv asked to slow down, try again in a moment')
+    const stake = mStake()
+    const mp = sides.length > 1 ? ++pairSeq.current : 0
+    if (mp) mPairs.current[mp] = { left: sides.length, profit: 0, ret: 0, legs: 0, closed: false }
+    setMres(null)
+    sides.forEach((side) => {
+      const meta = {
+        sym, side, stake, type: TYPE[side], barrier: barrierOf(side), dur: +c.dur || 1,
+        t0: Date.now(), trig: '', manual: true, mp,
+      }
+      const a = mArmP.current[side]
+      if (a && a.id && a.key === mKey(side, sym, stake)) {
+        delete mArmP.current[side]
+        delete mLatest.current[side]
+        sendBuy(meta, a.id, a.ask, a.subId, true, false)
+      } else {
+        slow(meta, false)
+      }
+    })
+    if (navigator.vibrate) navigator.vibrate(30)
+    setTimeout(mRearm, 600)
+  }
+
   // ---------- results ----------
   const finish = (c, o, prov) => {
     const cid = String(c.contract_id)
@@ -518,6 +632,7 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
     helpers.current.updHist(c.contract_id, {
       status: profit >= 0 ? 'win' : 'loss', profit, exit: Number.isNaN(ex) ? undefined : ex,
     })
+    if (o.meta.manual) return manualResult(c, o, profit, ex)
     netRef.current += profit
     if (o.meta.pair) return pairLeg(c, o, profit, ex)
     doneN.current += 1
@@ -595,6 +710,13 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
     delete settled.current[id]
     const real = pnl(c)
     if (Number.isNaN(real)) return
+    if (sm.meta.manual) {
+      const exm = typeof c.exit_tick_display_value === 'string' ? +c.exit_tick_display_value.slice(-1) : NaN
+      setMstats((st) => ({ ...st, net: st.net + real - sm.profit }))
+      helpers.current.updHist(id, { status: real >= 0 ? 'win' : 'loss', profit: real, exit: Number.isNaN(exm) ? undefined : exm })
+      if ((real >= 0) !== sm.win) addLog('⚠ Deriv corrected a manual trade to ' + (real >= 0 ? 'WIN ' : 'LOSS ') + real.toFixed(2))
+      return
+    }
     let flip = (real >= 0) !== sm.win
     let nowWin = real >= 0
     const ex = typeof c.exit_tick_display_value === 'string' ? +c.exit_tick_display_value.slice(-1) : NaN
@@ -643,6 +765,30 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
       const rid = m.req_id || (m.echo_req && m.echo_req.req_id)
       if (!rid || rid < 1500000 || rid >= 1600000) return
 
+      const mr = mArm.current[rid]
+      if (mr) {
+        if (m.error) {
+          if (isRate(m.error)) rateUntil.current = Date.now() + 5000
+          else if (already(m.error)) {
+            const n = (mTries.current[mr.side] || 0) + 1
+            mTries.current[mr.side] = n
+            if (n <= 3) setTimeout(() => { if (mLatest.current[mr.side] === rid) mArmOne(mr.side) }, 900)
+          }
+          return
+        }
+        if (m.msg_type === 'proposal') {
+          if (mLatest.current[mr.side] !== rid) {
+            if (m.subscription) forget(m.subscription.id)
+            return
+          }
+          const old = mArmP.current[mr.side]
+          if (old && old.subId && m.subscription && old.subId !== m.subscription.id) forget(old.subId)
+          mTries.current[mr.side] = 0
+          mArmP.current[mr.side] = { id: m.proposal.id, ask: m.proposal.ask_price, subId: m.subscription && m.subscription.id, key: mr.key }
+          setMq((q) => ({ ...q, [mr.side]: { ask: Number(m.proposal.ask_price), payout: Number(m.proposal.payout), key: mr.key } }))
+        }
+        return
+      }
       const ar = armReq.current[rid]
       if (ar) {
         const slot = ar.sym + '|' + ar.side
@@ -678,6 +824,7 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
           rateUntil.current = Date.now() + 5000
           addLog('Deriv asked to slow down, pausing 5s')
           if (r.meta && r.meta.pair) dropLeg(r.meta)
+          if (r.meta && r.meta.manual) { manualDrop(r.meta); setMres({ text: 'Deriv asked to slow down, try again in a moment', win: null, ret: null, t: Date.now() }) }
           return
         }
         if (r.kind === 'proposal' && already(m.error) && (r.meta.tries || 0) < 4) {
@@ -689,6 +836,12 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
         if (r.kind === 'buy' && r.armed && !r.retried) {
           addLog('Fast price expired, retrying')
           slow(r.meta, true)
+          return
+        }
+        if (r.meta && r.meta.manual) {
+          manualDrop(r.meta)
+          addLog('⚠ Manual trade: ' + m.error.message)
+          setMres({ text: m.error.message, win: null, ret: null, t: Date.now() })
           return
         }
         if (r.meta && r.meta.pair) dropLeg(r.meta)
@@ -732,6 +885,7 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
       const now = Date.now()
       pend.current.forEach((rid) => {
         const r = reqs.current[rid]
+        if (r && r.meta && r.meta.manual) return
         if (!r || now - r.t > 8000) {
           pend.current.delete(rid)
           if (r && r.meta && r.meta.pair) dropLeg(r.meta)
@@ -739,6 +893,7 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
         }
       })
       Object.entries(openMap.current).forEach(([id, o]) => {
+        if (o.meta.manual) return
         const age = now - o.t
         const expect = ((o.meta.dur || 1) * 2.5 + 5) * 1000
         if (age > expect && now - (pollAt.current[id] || 0) > 3000 && !paused.current) {
@@ -754,6 +909,35 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
     }, 2000)
     return () => clearInterval(t)
   }, [running])
+
+  // ---------- manual trades: time-outs and result look-ups ----------
+  useEffect(() => {
+    const t = setInterval(() => {
+      const now = Date.now()
+      pend.current.forEach((rid) => {
+        const r = reqs.current[rid]
+        if (r && r.meta && r.meta.manual && now - r.t > 8000) {
+          pend.current.delete(rid)
+          manualDrop(r.meta)
+          addLog('🖐 No reply to a manual trade request, skipped')
+        }
+      })
+      Object.entries(openMap.current).forEach(([id, o]) => {
+        if (!o.meta.manual) return
+        const age = now - o.t
+        const expect = ((o.meta.dur || 1) * 2.5 + 5) * 1000
+        if (age > expect && now - (pollAt.current[id] || 0) > 3000) {
+          pollAt.current[id] = now
+          sendRef.current({ proposal_open_contract: 1, contract_id: Number(id), req_id: ++seq.current })
+        }
+        if (age > 90000) {
+          delete openMap.current[id]
+          addLog('🖐 No result received for a manual trade')
+        }
+      })
+    }, 2000)
+    return () => clearInterval(t)
+  }, [])
 
   // ---------- tick monitor ----------
   const symKey = cfg.syms.join(',')
@@ -929,6 +1113,18 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
   const gateUI = cfg.mode === 'pair' ? cfg.entry !== 'now' : cfg.sentry === 'touch'
   const gdig = clamp(Math.round(+(cfg.mode === 'pair' ? cfg.touchD : cfg.stouch)), 0, 9)
   const gst = wsym ? gateState(wsym) : 'touch'
+  wsymRef.current = wsym || ''
+  useEffect(() => {
+    if (!active || !tradeOn || !wsym) { mRelease(); return undefined }
+    const t = setTimeout(mRearm, 500)
+    return () => clearTimeout(t)
+  }, [active, tradeOn, wsym, cfg.ob, cfg.ub, cfg.pob, cfg.pub, cfg.mode, cfg.dur, cfg.mstake, cur])
+  useEffect(() => mRelease, [])
+  const qtxt = (side) => {
+    const q = mq[side]
+    if (q && q.key === mKey(side, wsym, mStake()) && Number.isFinite(q.payout)) return 'win +' + (q.payout - q.ask).toFixed(2) + ' · returns ' + q.payout.toFixed(2)
+    return tradeOn ? '…' : 'log in first'
+  }
   const arr = (wsym && digs.current[wsym]) || []
   const pairOn = cfg.mode === 'pair'
   const pairLike = pairOn || cfg.sboth === true
@@ -955,7 +1151,7 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
   }
   const rOver = ringOf('over')
   const rUnder = ringOf('under')
-  const openNow = Object.keys(openMap.current).length + pend.current.size
+  const openNow = botOpen()
   const anyArmed = !pairOn && ((rOver.armed && sidesOn().includes('over')) || (rUnder.armed && sidesOn().includes('under')))
   const phase = !running ? 'idle' : paused.current ? 'paused' : openNow > 0 ? 'trading' : gateUI && gst !== 'open' ? 'waiting' : anyArmed ? 'armed' : lowOn && !okSyms.length ? 'waiting' : 'watching'
   const PHASE_TXT = { idle: 'IDLE', paused: 'RECONNECTING', trading: 'TRADE OPEN', armed: 'ARMED · waiting for the winning digit', waiting: gateUI && gst !== 'open' ? (gst === 'touch' ? 'WAITING · for a touch of ' + gdig : 'WAITING · touched ' + gdig + ', now a winning digit') : 'WAITING · digit ' + lowD + ' is not the lowest anywhere', watching: pairOn ? 'PAIR MODE · buying pairs' : 'WATCHING' }
@@ -1097,6 +1293,39 @@ export default function OverUnder({ active, tradeOn, send, cur, demo, addHist, u
           <div><small>Under {ub} would win</small><b>{sample.length ? pUnderWin.toFixed(1) + '%' : '–'}</b></div>
           <div><small>Ticks</small><b>{sample.length}</b></div>
         </div>
+      </section>
+
+      <section className="ou-card">
+        <div className="ou-h"><b>MANUAL TRADE</b><span>{wsym ? SYMN[wsym] : ''}</span></div>
+        <label>Stake
+          <input type="number" min="0.35" step="0.05" value={cfg.mstake} onChange={(e) => setC({ mstake: e.target.value })} />
+        </label>
+        <div className="ou-man">
+          <button className="o" disabled={!tradeOn} onClick={() => manualBuy(['over'])}>
+            <b>OVER {ob}</b>
+            <small>{qtxt('over')}</small>
+          </button>
+          <button className="u" disabled={!tradeOn} onClick={() => manualBuy(['under'])}>
+            <b>UNDER {ub}</b>
+            <small>{qtxt('under')}</small>
+          </button>
+        </div>
+        <button className="ou-both2" disabled={!tradeOn} onClick={() => manualBuy(['over', 'under'])}>
+          <b>OVER {ob} + UNDER {ub} TOGETHER</b>
+          <small>{bothLose.length ? 'loses only on ' + bothLose.join(', ') : 'no digit loses both'}</small>
+        </button>
+        {mres && (
+          <div className={'ou-mres ' + (mres.win === true ? 'win' : mres.win === false ? 'loss' : '')}>
+            {mres.text}
+            {mres.ret ? <em>Total return {mres.ret.toFixed(2)}</em> : null}
+          </div>
+        )}
+        <div className="ou-stats">
+          <div><small>Manual P/L</small><b className={mstats.net >= 0 ? 'win' : 'loss'}>{mstats.net >= 0 ? '+' : ''}{mstats.net.toFixed(2)}</b></div>
+          <div><small>Win / Loss</small><b>{mstats.wins} / {mstats.losses}</b></div>
+          <div><small>Stake</small><b>{mStake()}</b></div>
+        </div>
+        <div className="ou-note">Manual trades use the market at the top and the Over and Under digits from Strategy. They never change the bot's stake, recovery or stop limits.</div>
       </section>
 
       <section className="ou-card">
