@@ -803,7 +803,7 @@ let rxAt = Date.now()
           <div className="hrow">
             <div className="acct">
             <i className={'dot ' + (token ? (tradeOn ? 'online' : 'connecting') : status)} />
-            <span className="accw"><span>{token ? (bal ? `${bal} ${cur}` : '...') : status}</span>{token && acct ? <small className={'accb ' + (acct.demo ? 'demo' : 'real')}>{acct.demo ? 'DEMO' : 'REAL'}</small> : null}</span>
+            {token ? (bal ? `${bal} ${cur}` : '...') : status}
           </div>
             {token && (
               <button className="hamb" aria-label="Menu" onClick={() => setMenuOpen((o) => !o)}>
