@@ -631,3 +631,16 @@ button:disabled{opacity:.5}
 .ou-mres.win{background:rgba(25,195,126,.16);color:#8ff0bf}
 .ou-mres.loss{background:rgba(255,77,94,.14);color:#ff9aa8}
 .ou-mres em{display:block;font-style:normal;font-size:12px;opacity:.9;margin-top:2px}
+
+/* rf-marks */
+.rf-legend .w{border-color:rgba(25,195,126,.6);color:#7dffb8}
+.rf-legend .l{border-color:rgba(255,59,87,.6);color:#ff8da1}
+.rf-mk{font-style:normal;font-weight:800;font-size:11px;padding:3px 9px;border-radius:99px;background:rgba(255,255,255,.1);color:#9cb7e8;text-align:center}
+.rf-mk.win{background:rgba(25,195,126,.22);color:#7dffb8}
+.rf-mk.loss{background:rgba(255,59,87,.2);color:#ff8da1}
+.rf-sig.win,.rf-sig.loss,.rf-sig.wait{grid-template-columns:auto 1fr auto auto}
+.rf-sig.win{box-shadow:inset 4px 0 0 #19c37e}
+.rf-sig.loss{box-shadow:inset 4px 0 0 #ff3b57}
+.rf-sig.wait{box-shadow:inset 4px 0 0 #7f95bf}
+.rf-strip{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:6px 0 2px}
+.rf-strip span{font-size:11px;color:#9cb7e8;margin-right:4px}

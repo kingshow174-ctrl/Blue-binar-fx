@@ -349,6 +349,39 @@ const draw = (cv, W, H, cs, an, cfg, view) => {
       g.font = 'bold 9px sans-serif'
       g.fillText(rise ? 'RISE' : 'FALL', x(s.i) - 12, yy)
       g.font = '10px sans-serif'
+      if (cfg.res !== false) {
+        const stt = s.win === undefined ? 'wait' : s.win ? 'win' : 'loss'
+        const col = stt === 'win' ? '#19c37e' : stt === 'loss' ? '#ff3b57' : '#7f95bf'
+        if (stt !== 'wait') {
+          // dotted line to the candle where the signal was decided
+          const j = s.i + an.base.bt.hold
+          if (j < cs.length) {
+            g.strokeStyle = col
+            g.lineWidth = 1.4
+            g.setLineDash([3, 3])
+            g.beginPath(); g.moveTo(x(s.i), y(c.c)); g.lineTo(x(j), y(cs[j].c)); g.stroke()
+            g.setLineDash([])
+            g.fillStyle = col
+            g.beginPath(); g.arc(x(j), y(cs[j].c), 4.5, 0, Math.PI * 2); g.fill()
+            g.fillStyle = '#fff'
+            g.font = 'bold 8px sans-serif'
+            g.fillText(stt === 'win' ? '✓' : '✗', x(j) - 3, y(cs[j].c))
+            g.font = '10px sans-serif'
+          }
+        }
+        // result mark next to the badge
+        const mx = x(s.i) + w / 2 + 9
+        g.fillStyle = stt === 'wait' ? 'rgba(127,149,191,.35)' : col
+        g.beginPath(); g.arc(mx, yy, 8, 0, Math.PI * 2); g.fill()
+        g.strokeStyle = '#fff'
+        g.lineWidth = 1.2
+        g.stroke()
+        g.lineWidth = 1
+        g.fillStyle = '#fff'
+        g.font = 'bold 11px sans-serif'
+        g.fillText(stt === 'win' ? '✓' : stt === 'loss' ? '✗' : '…', mx - 4, yy)
+        g.font = '10px sans-serif'
+      }
     })
   }
   const pos = view.pos || []
@@ -838,9 +871,10 @@ function RiseFallInner({ active, tradeOn, send, cur, demo, addHist, updHist }) {
         {TFS.map(([g, l]) => <button key={g} className={cfg.gran === g ? 'on' : ''} onClick={() => setC({ gran: g })}>{l}</button>)}
       </div>
       <div className="rf-tg">
-        {[['zones', 'Zones'], ['zig', 'Zigzag'], ['hl', 'High/Low'], ['pats', 'Patterns'], ['rt', 'Retest']].map(([k, l]) => (
-          <button key={k} className={cfg[k] ? 'on' : ''} onClick={() => setC({ [k]: !cfg[k] })}>{l}</button>
-        ))}
+        {[['zones', 'Zones'], ['zig', 'Zigzag'], ['hl', 'High/Low'], ['pats', 'Patterns'], ['rt', 'Retest'], ['res', 'Results']].map(([k, l]) => {
+          const on = k === 'res' ? cfg.res !== false : cfg[k]
+          return <button key={k} className={on ? 'on' : ''} onClick={() => setC({ [k]: !on })}>{l}</button>
+        })}
       </div>
     </div>
   )
@@ -901,24 +935,37 @@ function RiseFallInner({ active, tradeOn, send, cur, demo, addHist, updHist }) {
         {feedErr && <div className="muted">⚠ {feedErr}</div>}
         <div className="rf-legend">
           <span className="r">Resistance</span><span className="s">Support</span><span className="t">Retest RT</span>
-          <span className="z">Zigzag HH/HL/LH/LL</span><span className="e">E engulfing</span><span className="k">K kangaroo tail</span>
+          <span className="z">Zigzag HH/HL/LH/LL</span><span className="w">✓ won</span><span className="l">✗ lost</span><span className="e">E engulfing</span><span className="k">K kangaroo tail</span>
         </div>
         <div className="muted left">{hint}. Drag to move, pinch to zoom, tap a candle for its prices.</div>
       </section>
 
       <section className="card">
         <div className="sech"><b>SIGNALS</b><span className="sub">fired on closed candles only</span></div>
-        {sigLog.length ? sigLog.slice(0, 6).map((s, i) => (
-          <div className={'rf-sig ' + s.dir} key={s.t + s.dir + i}>
-            <b>{s.dir === 'rise' ? '▲ RISE' : '▼ FALL'}</b>
-            <span>{s.kind === 'engulf' ? 'Engulfing' : 'Kangaroo tail'} · {MN[cfg.sym]} · {s.price.toFixed(2)}</span>
-            <small>{new Date(s.at).toLocaleTimeString()}</small>
-          </div>
-        )) : <div className="muted">No new signal yet. Alerts appear here when a candle touches a zone and a reversal candle closes.</div>}
+        {sigLog.length ? sigLog.slice(0, 8).map((s, i) => {
+          const hit = an ? an.base.sigs.find((x) => x.t === s.t && x.dir === s.dir) : null
+          const stt = hit ? (hit.win === undefined ? 'wait' : hit.win ? 'win' : 'loss') : 'unk'
+          const left = hit && hit.win === undefined && bt ? Math.max(1, hit.i + bt.hold - (cs.length - 2)) : 0
+          return (
+            <div className={'rf-sig ' + s.dir + ' ' + stt} key={s.t + s.dir + i}>
+              <b>{s.dir === 'rise' ? '▲ RISE' : '▼ FALL'}</b>
+              <span>{s.kind === 'engulf' ? 'Engulfing' : 'Kangaroo tail'} · {MN[cfg.sym]} · {s.price.toFixed(2)}</span>
+              <small>{new Date(s.at).toLocaleTimeString()}</small>
+              {stt !== 'unk' && <i className={'rf-mk ' + stt}>{stt === 'win' ? '✓ WON' : stt === 'loss' ? '✗ LOST' : '… ' + left + ' left'}</i>}
+            </div>
+          )
+        }) : <div className="muted">No new signal yet. Alerts appear here when a candle touches a zone and a reversal candle closes.</div>}
         {bt && (
           <div className="rf-bt">
             <b>Backtest on the {bt.bars} loaded candles</b>
             <div>{bt.n} signals · after {bt.hold} candle{bt.hold > 1 ? 's' : ''}: {bt.wins} of {bt.done} moved the right way{pct !== null ? ' (' + pct + '%)' : ''}</div>
+            <div className="rf-strip">
+              <span>Last signals</span>
+              {an.base.sigs.slice(-14).map((x, i) => (
+                <i key={i} className={'rf-mk ' + (x.win === undefined ? 'wait' : x.win ? 'win' : 'loss')}>{x.win === undefined ? '…' : x.win ? '✓' : '✗'}</i>
+              ))}
+            </div>
+            <div>Won {bt.wins} · Lost {bt.done - bt.wins} · Waiting {bt.n - bt.done}</div>
             <small>Rise/Fall pays about 90 to 95% of the stake on a win, so it needs roughly 52 to 53% to break even. Volatility indices are random, so expect close to 50%.</small>
           </div>
         )}
