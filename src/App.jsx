@@ -8,6 +8,7 @@ import Differ from './Differ.jsx'
 import Scanner from './Scanner.jsx'
 import RiseFall from './RiseFall.jsx'
 import OverUnder from './OverUnder.jsx'
+import MatchScan from './MatchScan.jsx'
 import { bus } from './bus.js'
 import HistoryTab from './HistoryTab.jsx'
 
@@ -837,6 +838,7 @@ let rxAt = Date.now()
           <button className={tab === 'scanner' ? 'on' : ''} onClick={() => setTab('scanner')}>Scanner</button>
           <button className={tab === 'rf' ? 'on' : ''} onClick={() => setTab('rf')}>Rise/Fall</button>
           <button className={tab === 'ou' ? 'on' : ''} onClick={() => setTab('ou')}>Over &amp; Under</button>
+          <button className={tab === 'ms' ? 'on' : ''} onClick={() => setTab('ms')}>Matches Scan</button>
         </div>
       </div>
 
@@ -1037,6 +1039,18 @@ let rxAt = Date.now()
       <div className="multiwrap" style={{ display: tab === 'ou' ? 'grid' : 'none' }}>
         <OverUnder
           active={tab === 'ou'}
+          tradeOn={tradeOn}
+          send={trdSend}
+          cur={cur}
+          demo={acct ? acct.demo : true}
+          addHist={(e) => setHist((h) => [e, ...h].slice(0, 500))}
+          updHist={(id, p) => setHist((h) => h.map((x) => (String(x.id) === String(id) ? { ...x, ...p } : x)))}
+        />
+      </div>
+
+      <div className="multiwrap" style={{ display: tab === 'ms' ? 'grid' : 'none' }}>
+        <MatchScan
+          active={tab === 'ms'}
           tradeOn={tradeOn}
           send={trdSend}
           cur={cur}

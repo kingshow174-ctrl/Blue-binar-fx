@@ -644,3 +644,28 @@ button:disabled{opacity:.5}
 .rf-sig.wait{box-shadow:inset 4px 0 0 #7f95bf}
 .rf-strip{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:6px 0 2px}
 .rf-strip span{font-size:11px;color:#9cb7e8;margin-right:4px}
+
+/* ms-v1 */
+.ms-man{display:grid;grid-template-columns:1.2fr 1fr;gap:10px;align-items:end;margin-top:12px}
+.ms-scan{padding:16px;border-radius:16px;border:0;font-weight:900;letter-spacing:1.2px;color:#fff;background:linear-gradient(135deg,#8a5cff,#c04bff);box-shadow:0 10px 26px rgba(138,92,255,.4)}
+.ms-rows{display:grid;gap:8px;margin-top:12px}
+.ms-row{display:grid;grid-template-columns:1.25fr .9fr .6fr;gap:6px 10px;align-items:center;padding:11px 12px;border-radius:16px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);font-size:12px;color:#cfe0ff;cursor:pointer}
+.ms-row .st{grid-column:1 / -1;font-size:10px;font-weight:800;letter-spacing:.8px;color:#8fb0e8}
+.ms-row button{grid-column:1 / -1;padding:10px;border-radius:12px;border:0;font-weight:900;color:#fff;background:linear-gradient(135deg,#8a5cff,#c04bff)}
+.ms-row button:disabled{opacity:.45}
+.ms-row.rise{border-color:rgba(255,196,60,.4)}
+.ms-row.tap{border-color:rgba(255,196,60,.7);background:rgba(255,196,60,.07)}
+.ms-row.ready{border-color:rgba(25,195,126,.7);background:rgba(25,195,126,.1)}
+.ms-row.armed{border-color:#19c37e;box-shadow:0 0 22px rgba(25,195,126,.35);background:rgba(25,195,126,.14)}
+.ms-row.act{outline:2px solid rgba(122,92,255,.7)}
+.ms-row .nm{font-weight:800;color:#fff}
+.ms-row .dg{display:flex;gap:8px;align-items:baseline}
+.ms-row .dg b{font-size:22px;color:#fff}
+.ms-row .dg i{font-style:normal;color:#ffd88a;font-weight:800}
+.ms-row .st.armed,.ms-row .st.ready{color:#8ff0bf}
+.ms-row .st.tap,.ms-row .st.rise{color:#ffd88a}
+.ms-rs{font-style:normal;font-size:10px;font-weight:800;color:#8fb0e8;height:12px;margin-top:-4px}
+.ms-rs.on{color:#ffd88a}
+.ou-ldp .fill.rs{box-shadow:0 0 10px rgba(255,196,60,.55)}
+.ms-base{position:absolute;left:8%;right:8%;height:2px;background:rgba(255,255,255,.85);border-radius:2px}
+.ou-chip2{margin-top:10px;width:100%;padding:10px;border-radius:12px}
